@@ -12,6 +12,7 @@ param image string
 param port int
 param variables object
 param tenantId string
+param authEnabled bool = true
 param authClientId string
 param allowedObjectId string
 @secure()
@@ -30,7 +31,8 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
     workloadProfileName: 'Consumption'
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: [{ name: 'entra-client-secret', value: authClientSecret }]
+      // Preserve existing secrets until the separate auth config is disabled.
+      ...(authEnabled ? { secrets: [{ name: 'entra-client-secret', value: authClientSecret }] } : {})
       registries: [{ server: registryServer, identity: identityId }]
       ingress: {
         external: true
@@ -67,13 +69,15 @@ resource auth 'Microsoft.App/containerApps/authConfigs@2025-07-01' = {
   parent: app
   name: 'current'
   properties: {
-    platform: { enabled: true }
-    globalValidation: {
+    platform: { enabled: authEnabled }
+    globalValidation: authEnabled ? {
       unauthenticatedClientAction: service == 'ui' ? 'RedirectToLoginPage' : 'Return401'
       redirectToProvider: 'azureActiveDirectory'
+    } : {
+      unauthenticatedClientAction: 'AllowAnonymous'
     }
     httpSettings: { requireHttps: true }
-    identityProviders: {
+    identityProviders: authEnabled ? {
       azureActiveDirectory: {
         enabled: true
         registration: {
@@ -86,7 +90,7 @@ resource auth 'Microsoft.App/containerApps/authConfigs@2025-07-01' = {
           defaultAuthorizationPolicy: { allowedPrincipals: { identities: [allowedObjectId] } }
         }
       }
-    }
+    } : {}
     login: {
       cookieExpiration: { convention: 'FixedTime', timeToExpiration: '01:00:00' }
       tokenStore: { enabled: false }

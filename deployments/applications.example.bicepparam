@@ -1,5 +1,7 @@
 using './applications.bicep'
 
+var authenticationEnabled = json(toLower(trim(readEnvironmentVariable('AUTH_ENABLED', 'true'))))
+param authEnabled = authenticationEnabled
 param foundationName = readEnvironmentVariable('REGULATORY_WORKBENCH_FOUNDATION_NAME')
 param containerAppsEnvironmentName = readEnvironmentVariable('AZURE_CONTAINER_APPS_ENVIRONMENT_NAME')
 param location = 'northeurope'
@@ -14,6 +16,7 @@ param modelVersion = readEnvironmentVariable('POC_MODEL_VERSION')
 param agentVersion = readEnvironmentVariable('POC_AGENT_VERSION')
 param chatAgentVersion = readEnvironmentVariable('POC_CHAT_AGENT_VERSION')
 param tenantId = readEnvironmentVariable('REGULATORY_WORKBENCH_TENANT_ID')
-param authClientId = readEnvironmentVariable('REGULATORY_WORKBENCH_AUTH_CLIENT_ID')
-param allowedObjectId = readEnvironmentVariable('REGULATORY_WORKBENCH_ALLOWED_OBJECT_ID')
-param authClientSecret = readEnvironmentVariable('REGULATORY_WORKBENCH_AUTH_CLIENT_SECRET')
+// Environment reads are evaluated even in an unused branch; read the explicit mode instead when disabled.
+param authClientId = authenticationEnabled ? readEnvironmentVariable(authenticationEnabled ? 'REGULATORY_WORKBENCH_AUTH_CLIENT_ID' : 'AUTH_ENABLED') : ''
+param allowedObjectId = authenticationEnabled ? readEnvironmentVariable(authenticationEnabled ? 'REGULATORY_WORKBENCH_ALLOWED_OBJECT_ID' : 'AUTH_ENABLED') : ''
+param authClientSecret = authenticationEnabled ? readEnvironmentVariable(authenticationEnabled ? 'REGULATORY_WORKBENCH_AUTH_CLIENT_SECRET' : 'AUTH_ENABLED') : ''

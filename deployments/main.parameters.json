@@ -6,6 +6,7 @@
     "location": { "value": "${AZURE_LOCATION=northeurope}" },
     "principalId": { "value": "${AZURE_PRINCIPAL_ID}" },
     "allowedObjectId": { "value": "${REGULATORY_WORKBENCH_ALLOWED_OBJECT_ID=}" },
+    "authEnabled": { "value": "${AUTH_ENABLED=true}" },
     "profile": { "value": "${REGULATORY_WORKBENCH_PROFILE=dev}" },
     "foundryLocation": { "value": "${AZURE_FOUNDRY_LOCATION=swedencentral}" },
     "modelName": { "value": "${AZURE_AI_MODEL_NAME=gpt-5.4-mini}" },

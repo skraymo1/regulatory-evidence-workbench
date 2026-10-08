@@ -6,6 +6,7 @@ param environmentName string
 param location string = 'northeurope'
 param principalId string
 param allowedObjectId string = ''
+param authEnabled bool = true
 @allowed(['dev', 'prod'])
 param profile string = 'dev'
 param foundryLocation string = 'swedencentral'
@@ -17,7 +18,7 @@ param modelCapacity int = 250
 param embeddingCapacity int = 10
 
 resource group 'Microsoft.Resources/resourceGroups@2025-04-01' = {
-  name: 'rg-${environmentName}'
+  name: '${environmentName}'
   location: location
   tags: { 'azd-env-name': environmentName }
 }
@@ -34,6 +35,7 @@ module workbench './workbench.bicep' = {
     modelVersion: modelVersion
     modelCapacity: modelCapacity
     embeddingCapacity: embeddingCapacity
+    authEnabled: authEnabled
   }
 }
 output AZURE_RESOURCE_GROUP string = group.name
@@ -56,6 +58,7 @@ output AZURE_AI_SEARCH_ENDPOINT string = workbench.outputs.searchEndpoint
 output SERVICE_API_RESOURCE_NAME string = workbench.outputs.apiName
 output SERVICE_UI_RESOURCE_NAME string = workbench.outputs.uiName
 output REGULATORY_WORKBENCH_ALLOWED_OBJECT_ID string = empty(allowedObjectId) ? principalId : allowedObjectId
+output AUTH_ENABLED bool = authEnabled
 output REGULATORY_WORKBENCH_PROFILE string = profile
 output REGULATORY_WORKBENCH_AUTH_CLIENT_ID string = workbench.outputs.authClientId
 output REGULATORY_WORKBENCH_AUTH_APPLICATION_OBJECT_ID string = workbench.outputs.authApplicationObjectId

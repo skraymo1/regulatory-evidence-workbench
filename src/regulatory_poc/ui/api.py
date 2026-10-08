@@ -80,7 +80,7 @@ async def azure_request_error(request, exc: AzureError):
 @app.middleware("http")
 async def require_account(request, call_next):
     settings = Settings.from_env()
-    if settings.allowed_oid and not authorize_principal(
+    if settings.auth_enabled and settings.allowed_oid and not authorize_principal(
         request.headers, settings.allowed_oid, settings.tenant_id
     ):
         return JSONResponse({"detail": "Approved Entra account required."}, status_code=403)
