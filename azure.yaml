@@ -1,4 +1,26 @@
 name: regulatory-evidence-workbench
+infra:
+  provider: bicep
+  path: deployments
+hooks:
+  preprovision:
+    windows:
+      shell: pwsh
+      run: python scripts\azd_hooks.py preprovision
+      interactive: true
+    posix:
+      shell: sh
+      run: python3 scripts/azd_hooks.py preprovision
+      interactive: true
+  postprovision:
+    windows:
+      shell: pwsh
+      run: python scripts\azd_hooks.py postprovision
+      interactive: true
+    posix:
+      shell: sh
+      run: python3 scripts/azd_hooks.py postprovision
+      interactive: true
 services:
   api:
     project: .

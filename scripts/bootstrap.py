@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import json
 import os
+import argparse
+import time
 from pathlib import Path
 
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import PromptAgentDefinition
 from azure.identity import DefaultAzureCredential
+from azure.core.exceptions import HttpResponseError
 from azure.search.documents.indexes import SearchIndexClient
 from azure.search.documents.indexes.models import (
     SearchIndex, SearchField, SimpleField, SearchableField, SearchFieldDataType,
@@ -81,7 +84,21 @@ def create_index(client, name, *, embedding_endpoint, embedding_deployment):
     ))
 
 
-def main():
+def wait_for_access(index_client, project, seconds=300):
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            list(index_client.list_index_names())
+            next(iter(project.agents.list()), None)
+            return
+        except HttpResponseError as error:
+            if error.status_code != 403 or time.monotonic() >= deadline:
+                raise
+            print("Waiting for Search/Foundry role propagation (read-only access probe).", flush=True)
+            time.sleep(10)
+
+
+def main(output_path=None, *, wait_for_rbac=False):
     settings = Settings.from_env()
     settings.validate()
     required = {
@@ -100,15 +117,17 @@ def main():
         settings.search_endpoint, credential,
         api_version="2026-08-01-preview",
     )
+    project = AIProjectClient(
+        endpoint=settings.foundry_project_endpoint, credential=credential
+    )
+    if wait_for_rbac:
+        wait_for_access(index_client, project)
     for name in ("fidelity-sources", "fidelity-reports"):
         create_index(
             index_client, name, embedding_endpoint=settings.embedding_endpoint,
             embedding_deployment=settings.embedding_model,
         )
     rules = fidelity_rules()
-    project = AIProjectClient(
-        endpoint=settings.foundry_project_endpoint, credential=credential
-    )
     created = {}
     for name, instructions, key in [
         (settings.agent_name, rules["instructions"], "POC_AGENT_VERSION"),
@@ -121,10 +140,14 @@ def main():
         )
         created[key] = str(agent.version)
         print(json.dumps({"event": "agent_version_created", "name": name, "version": agent.version}))
-    output = Path(".azure/agent-versions.json")
+    output = Path(output_path or ".azure/agent-versions.json")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(created, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", help="Environment-specific agent-version output path.")
+    parser.add_argument("--wait-for-rbac", action="store_true")
+    args = parser.parse_args()
+    main(args.output, wait_for_rbac=args.wait_for_rbac)

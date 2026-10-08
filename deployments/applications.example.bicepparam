@@ -1,7 +1,8 @@
 using './applications.bicep'
 
 param foundationName = readEnvironmentVariable('REGULATORY_WORKBENCH_FOUNDATION_NAME')
-param location = 'swedencentral'
+param containerAppsEnvironmentName = readEnvironmentVariable('AZURE_CONTAINER_APPS_ENVIRONMENT_NAME')
+param location = 'northeurope'
 param profile = readEnvironmentVariable('REGULATORY_WORKBENCH_PROFILE', 'dev')
 param apiImage = readEnvironmentVariable('REGULATORY_WORKBENCH_API_IMAGE')
 param uiImage = readEnvironmentVariable('REGULATORY_WORKBENCH_UI_IMAGE')

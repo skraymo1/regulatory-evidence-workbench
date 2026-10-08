@@ -89,117 +89,269 @@ to start the API. Both scripts use local storage and retrieval; only model calls
 go to Foundry. The scripts accept `-Port`, `-ProjectEndpoint` and
 `-ModelDeployment`. Model calls incur Azure charges.
 
-## Run in Azure
+## Run in Azure with azd
 
-The application runs as two Azure Container Apps with managed identities,
-Azure Blob Storage, Azure AI Search and Microsoft Foundry. The Bicep templates
-in `deployments` deploy a new environment in two stages: infrastructure first,
-then application images and authentication.
+**No existing Azure resources are required.** `azd up` uses the Bicep entry point
+in `deployments\main.bicep` and lifecycle hooks to provision and initialize the
+complete workbench:
 
-### Prerequisites
+- A resource group, Microsoft Foundry account/project, a pinned GPT-5.4 mini
+  deployment, and `text-embedding-3-small` with 1,536-dimensional vectors.
+- Azure AI Search, source/report indexes, knowledge sources and knowledge bases,
+  and the two versioned Foundry prompt agents.
+- Blob Storage with private document/report/state containers, Container Registry,
+  Log Analytics, a VNet-integrated Container Apps environment, and API/UI
+  Container Apps.
+- A virtual network, delegated Container Apps subnet, private-endpoint subnet,
+  network security groups, a Blob private endpoint and linked private DNS zone.
+- Managed identities and scoped RBAC for the applications, Search vectorizer,
+  Foundry project identity and bootstrap operator.
+- A single-tenant Entra application/service principal, a generated client secret
+  stored in Key Vault, and sign-in callbacks for both applications.
 
-- Azure CLI, Bicep 0.45 or later, and the Python environment from Setup.
-- An approved subscription and a new resource group, with permission to deploy
-  resources and assign the roles defined by the templates.
-- An existing Foundry account/project, a generation model deployment, and a
-  `text-embedding-3-small` deployment with 1,536-dimensional output.
-- Permission to create prompt-agent versions in the Foundry project and to
-  submit builds to Azure Container Registry.
-- A single-tenant Entra app registration, a client secret, and the object ID of
-  the approved user. The application currently restricts access to that one user.
+All infrastructure resources are defined in Bicep, including the Entra application
+and service principal through the pinned
+[Microsoft Graph extension](https://learn.microsoft.com/graph/templates/overview-bicep-templates-for-graph).
+Bicep generates the application/client ID and exports
+`REGULATORY_WORKBENCH_AUTH_CLIENT_ID`; no authentication ID is a required input.
+The generated application and service-principal object IDs are also exported.
+Both sign-in callback URLs are configured in Bicep from the Container Apps
+environment's domain. Credential generation and Search/Foundry data-plane
+initialization run automatically through azd hooks. Foundry uses the basic agent
+setup with platform-managed agent storage; application documents and results use
+the deployed Blob account. A separate Cosmos DB account is not required.
 
-The examples use Sweden Central for infrastructure. Choose regions, model
-availability and network access that meet your organization's requirements.
-The foundation uses authenticated public service endpoints with private Blob
-containers; the optional `deployments\modules\network.bicep` is not wired into this deployment.
-Organizations requiring private endpoints must adapt and review the networking
-before deployment. The `prod` profile changes sizing, not production certification.
+### Account requirements and tools
 
-### Deploy infrastructure
+No pre-created resources, app registrations, authentication IDs or secrets are
+required. You need an Azure account with an active subscription and access to its
+Entra tenant. The deploying user must be able to create resources and assign
+roles (for example, subscription **Owner**), register resource providers, and
+create an Entra application and service principal in that subscription's tenant.
+Microsoft Graph Bicep deployment requires a work/school tenant identity with
+the delegated `Application.ReadWrite.All` permission; subscription Owner alone
+does not grant directory permissions. Personal Microsoft account authentication
+is not supported by the Graph extension. Use the tenant's work/school identity
+for this deployment.
+Tenant policies, subscription restrictions and model quotas cannot be bypassed
+by a template. Restricted organizations may need an administrator to grant these
+permissions or approve model quota first.
 
-Replace the placeholders before running these commands. The deployment commands
-create billable Azure resources.
+Run from this checkout with current [Azure Developer CLI
+(azd)](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd),
+[Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli), Python 3.11+
+and PowerShell 7 on Windows. Linux/macOS hooks use `sh` and `python3`.
+Azure Cloud Shell is also an option; ensure azd is installed and the checkout
+is available there. No local Docker installation is needed: images are built
+in Azure Container Registry. The hooks create an environment-specific Python
+virtual environment and install the project's bootstrap dependencies only if
+they are missing. Bicep 0.45+ is required; Azure CLI manages its Bicep installation.
+
+### First deployment
+
+These commands create **billable resources**. Sign in to both CLIs as the same
+user in the subscription's tenant. Use a 2-16 character environment name with
+lowercase letters, digits and hyphens.
 
 ```powershell
 az login
-az account set --subscription "<subscription-id>"
-$resourceGroup = "<new-resource-group>"
-$env:REGULATORY_WORKBENCH_OPERATOR_OBJECT_ID = "<bootstrap-operator-object-id>"
-$env:REGULATORY_WORKBENCH_FOUNDRY_RESOURCE_GROUP = "<existing-foundry-resource-group>"
-$env:REGULATORY_WORKBENCH_FOUNDRY_ACCOUNT_NAME = "<existing-foundry-account>"
-
-az group create --name $resourceGroup --location swedencentral
-az deployment group what-if --resource-group $resourceGroup --parameters .\deployments\dev.bicepparam
-az deployment group create --name foundation --resource-group $resourceGroup --parameters .\deployments\dev.bicepparam --output none
-if ($LASTEXITCODE -ne 0) { throw "Foundation deployment failed." }
-$outputs = az deployment group show --name foundation --resource-group $resourceGroup --query properties.outputs --output json | ConvertFrom-Json
+azd auth login
+azd env new regwork-dev
+azd up
 ```
 
-Use `prod.bicepparam` instead of `dev.bicepparam` for the production sizing
-profile. Allow time for role assignments to propagate before the next steps.
-
-### Build images and initialize Search and Foundry
-
-Use a unique release tag for each build.
+azd selects a subscription; if none has been selected, the hook uses the Azure
+CLI's current subscription. Infrastructure defaults to **North Europe** and
+Foundry defaults independently to **Sweden Central**. Container Apps uses
+AKS-backed regional capacity, so Foundry model availability does not imply
+Container Apps capacity in the same region.
+To choose another subscription or region before `azd up`:
 
 ```powershell
-$releaseTag = "<unique-release-tag>"
-az acr build --registry $outputs.registryName.value --image "regulatory-api:$releaseTag" --file Dockerfile.api .
-if ($LASTEXITCODE -ne 0) { throw "API image build failed." }
-az acr build --registry $outputs.registryName.value --image "regulatory-ui:$releaseTag" --file Dockerfile.ui .
-if ($LASTEXITCODE -ne 0) { throw "UI image build failed." }
-
-$env:POC_AGENT_MODE = "foundry"
-$env:FOUNDRY_PROJECT_ENDPOINT = "https://<foundry-account>.services.ai.azure.com/api/projects/<project>"
-$env:AZURE_AI_MODEL_DEPLOYMENT_NAME = "<generation-deployment>"
-$env:POC_MODEL_VERSION = "<deployed-generation-model-version>"
-$env:AZURE_AI_SEARCH_ENDPOINT = $outputs.searchEndpoint.value
-$env:AZURE_AI_EMBEDDING_ENDPOINT = "https://<foundry-account>.openai.azure.com/"
-$env:AZURE_AI_EMBEDDING_MODEL = "<text-embedding-3-small-deployment>"
-python .\scripts\bootstrap.py
-if ($LASTEXITCODE -ne 0) { throw "Search and Foundry bootstrap failed." }
-$versions = Get-Content .\.azure\agent-versions.json -Raw | ConvertFrom-Json
-$env:POC_AGENT_VERSION = $versions.POC_AGENT_VERSION
-$env:POC_CHAT_AGENT_VERSION = $versions.POC_CHAT_AGENT_VERSION
+azd env set AZURE_SUBSCRIPTION_ID "<subscription-id>"
+azd env set AZURE_LOCATION "<azure-region>"
+azd env set AZURE_FOUNDRY_LOCATION "<foundry-region>"
 ```
 
-Bootstrap creates or updates the source/report indexes and knowledge bases and
-creates two prompt-agent versions. Run it once for initial setup; rerunning it
-creates new agent versions. It does not import documents. Keep `.azure` local.
+No Foundry endpoint, model deployment, resource group, user object ID, Entra
+registration or secret needs to be prepared manually. The hook discovers the
+deploying user and restricts both applications to that user by default. It
+registers missing resource providers; Bicep creates the infrastructure and Entra
+registration and records the generated client ID. The postprovision hook stores
+the generated 180-day credential in Key Vault through a secure Bicep/ARM
+deployment, initializes Search and Foundry after data-plane RBAC propagation,
+builds initial images and deploys the application Bicep with the
+generated client ID. **No placeholder containers are deployed.** The usual azd
+service deployment then takes over image releases.
 
-### Deploy and run the applications
+The credential never goes into CLI arguments, azd's `.env`, or local parameter
+files. The credential deployment sends the value to ARM as an in-memory secure
+parameter; the application deployment receives only a Key Vault secret reference.
+Environment outputs,
+pinned agent versions and bootstrap state are kept under `.azure` (Git-ignored);
+keep that directory private and retain it for subsequent deployments.
 
-Inject the Entra secret through your approved secret-management process; do not
-write it into a committed parameter file or print compiled parameters.
+Open the `UI_URL` printed by the hook, sign in as the deploying user, open
+**Comparison sources** and import documents you are authorized to process.
+Documents are not bundled or automatically imported. Hosted storage is separate
+from local data. Verify that anonymous and unapproved users cannot access either
+application. Retrieve the URLs later with `azd env get-value UI_URL` and
+`azd env get-value API_URL`.
+
+### Configuration
+
+Set these before provisioning; unset values use the defaults in Bicep:
+
+| azd environment variable | Default / purpose |
+| --- | --- |
+| `AZURE_LOCATION` | `northeurope`; base infrastructure and Container Apps region |
+| `REGULATORY_WORKBENCH_PROFILE` | `dev`; `prod` increases replicas and logging limits |
+| `AZURE_FOUNDRY_LOCATION` | `swedencentral`; independent Foundry account/project/model region |
+| `AZURE_AI_MODEL_NAME` | `gpt-5.4-mini` |
+| `AZURE_AI_MODEL_VERSION` | `2026-03-17`; model versions are pinned without automatic upgrades |
+| `REGULATORY_WORKBENCH_ALLOWED_OBJECT_ID` | Deploying user's tenant object ID; override to approve a different single user |
+
+For example, `azd env set REGULATORY_WORKBENCH_PROFILE prod` selects production
+sizing. Generation and embedding deployment capacities default to 10 units each;
+adjust the numeric `modelCapacity` and `embeddingCapacity` values in
+`deployments\main.parameters.json` to match your subscription's quota. Capacity
+units depend on the model. If Azure reports unavailable models, retired versions
+or insufficient quota, select a supported model/version/region or request quota;
+the deployment does not silently switch models.
+
+The generation model is used by both workbench agents and live regulatory
+analysis. Its deployment name follows `AZURE_AI_MODEL_NAME`; the embeddings model
+remains `text-embedding-3-small`. Changing the generation model/version and
+reprovisioning refreshes the pinned agent versions. If an older model deployment
+already exists, incremental Bicep deployment does not remove it automatically.
+
+The foundation keeps Storage public access disabled and wires
+`deployments\modules\network.bicep` automatically. Both apps run in a
+VNet-integrated Consumption environment and reach Blob Storage through a private
+endpoint and `privatelink.blob.core.windows.net` DNS. Application code keeps using
+the normal Blob URL and managed identity; DNS selects the private endpoint.
+The Entra-protected API/UI URLs remain publicly reachable, so no VPN is required
+to use the workbench. Bootstrap uses authenticated public Foundry/Search
+endpoints and does not read Blob data. The apps upload extracted passages into
+Search indexes, so no Search-to-Blob shared private link or Search tier upgrade
+is needed.
+
+Key Vault public access is also disabled; the deployment uses ARM secret creation
+and the trusted Microsoft services allowance for ARM secret references. No local
+connection to the vault's data-plane endpoint is required. Private Link and
+private DNS add usage charges; the network does not add a NAT Gateway, VPN
+gateway or dedicated compute profile. Direct Blob access from a developer
+machine or Storage Explorer requires approved connectivity to the VNet; use
+the workbench UI for ordinary document operations.
+Organizations requiring private endpoints for Foundry/Search, fully private
+ingress or a Network Security Perimeter must adapt and review that additional
+networking.
+The `prod` profile changes sizing, not production certification.
+
+### Updates and recovery
+
+Use `azd deploy` for code-only releases, or `azd deploy api` / `azd deploy ui`
+for one service. Use `azd provision` for infrastructure changes, or `azd up`
+for both. Reprovisioning discovers the currently deployed images rather than
+rolling back to initial tags. Unchanged bootstrap configuration reuses the pinned
+agent versions; model/project/Search changes initialize a new set of versions.
+To deliberately rerun bootstrap after changing prompts or index definitions,
+remove `.azure\<environment-name>\bootstrap-state.json` before provisioning.
+
+Run `azd provision` periodically to renew the Entra credential when it has fewer
+than seven days remaining, including after expiration. Application deployment
+always follows credential initialization, including when Bicep recreates a
+deleted registration and generates a new client ID. Credentials are appended
+rather than destructively resetting unrelated credentials. Remove obsolete
+credentials through your approved Entra administration process.
+
+Hooks bound waits and stop on failures. They do not automatically repeat
+ambiguous writes. If interrupted or timed out, inspect the named ARM deployment,
+ACR run, Entra registration/credentials and Key Vault secret before rerunning.
+Initial ACR builds use `--no-logs` to obtain structured run metadata, with a
+900-second remote build limit and a 17-minute hook deadline that includes the
+CLI wait. The hook prints the unique image tag before starting and checks the
+reported run's status before using its image. Missing run metadata stops with
+an explicit recovery message, never an automatic replacement build.
+First deployment can build each image twice: once to create Container Apps with
+real images, then through azd's normal service deployment.
+
+If an older hook stops in `build_image` with `'NoneType' object is not
+subscriptable`, the CLI returned no run metadata; that does not mean the remote
+build failed. Inspect the registry's task runs and output images first.
+After confirming the run is finished, rerun `azd up --environment
+<environment-name>` from the updated checkout. Keep the existing resource group
+and bootstrap state; current credentials and pinned agent versions are reused.
+If no apps were deployed yet, the retry builds new initial images rather than
+automatically adopting an image from the interrupted run.
+
+If an older hook fails on Key Vault HTTPS access or `ForbiddenByConnection`
+after infrastructure succeeds, keep the existing environment. A tenant policy
+can disable vault public access even when an earlier template requested it.
+The current hook reads secret metadata through ARM and creates the credential
+secret with `deployments\authentication-secret.bicep`; it does not enable public
+access, disable TLS verification, or require a policy exemption.
+[Key Vault network restrictions](https://learn.microsoft.com/azure/key-vault/general/network-security)
+do not block ARM secret deployment. After checking for interrupted credential
+writes, rerun `azd up --environment <environment-name>` from the updated checkout.
+This also applies configured model changes. If credential deployment fails,
+inspect the `authentication-secret` resource-group deployment before rerunning.
+
+If Storage access fails with a public-network restriction, the current foundation
+provisions the Blob private endpoint, private DNS and VNet-integrated hosting;
+do not enable Storage public access or exempt its network policy.
+[Storage private endpoints](https://learn.microsoft.com/azure/storage/common/storage-private-endpoints)
+work with public access disabled. The foundation exports
+`AZURE_CONTAINER_APPS_ENVIRONMENT_NAME` and `AZURE_CONTAINER_APPS_ENVIRONMENT_ID`;
+application deployment and Entra callback URLs use the new environment.
+
+[Container Apps network type cannot be changed after creation](https://learn.microsoft.com/azure/container-apps/networking).
+For a partial deployment that has no API/UI apps yet, rerunning `azd up` can keep
+the existing Storage/Foundry/registry/Key Vault resources and create
+`cae-net-<foundation-name>` alongside the old empty `cae-<foundation-name>`
+environment. The old environment is retained, not deleted automatically.
+Inspect it and confirm it has no apps before retiring it separately. If API/UI
+apps already run in the legacy environment, the preprovision hook stops before
+changing their images or callbacks: deploy a fresh azd environment/resource group,
+migrate retained data, and retire the old deployment through an approved process.
+
+If Container Apps provisioning fails with `AKSCapacityHeavyUsage`, choose another
+base region. An existing Storage account, registry, managed identity or Container
+Apps environment cannot be relocated by changing `AZURE_LOCATION`; after a
+partial deployment, use a fresh azd environment and resource group:
 
 ```powershell
-$env:REGULATORY_WORKBENCH_FOUNDATION_NAME = $outputs.foundationName.value
-$env:REGULATORY_WORKBENCH_PROFILE = "dev" # Use "prod" with prod.bicepparam.
-$env:REGULATORY_WORKBENCH_API_IMAGE = "$($outputs.registryEndpoint.value)/regulatory-api:$releaseTag"
-$env:REGULATORY_WORKBENCH_UI_IMAGE = "$($outputs.registryEndpoint.value)/regulatory-ui:$releaseTag"
-$env:REGULATORY_WORKBENCH_PROJECT_ENDPOINT = $env:FOUNDRY_PROJECT_ENDPOINT
-$env:REGULATORY_WORKBENCH_EMBEDDING_ENDPOINT = $env:AZURE_AI_EMBEDDING_ENDPOINT
-$env:REGULATORY_WORKBENCH_TENANT_ID = "<tenant-id>"
-$env:REGULATORY_WORKBENCH_AUTH_CLIENT_ID = "<entra-application-client-id>"
-$env:REGULATORY_WORKBENCH_ALLOWED_OBJECT_ID = "<approved-user-object-id>"
-# REGULATORY_WORKBENCH_AUTH_CLIENT_SECRET must already be set by your secret-management process.
-az deployment group what-if --resource-group $resourceGroup --parameters .\deployments\applications.example.bicepparam
-az deployment group create --name applications --resource-group $resourceGroup --parameters .\deployments\applications.example.bicepparam --output none
-if ($LASTEXITCODE -ne 0) { throw "Application deployment failed." }
-$urls = az deployment group show --name applications --resource-group $resourceGroup --query properties.outputs --output json | ConvertFrom-Json
-$urls.apiUrl.value
-$urls.uiUrl.value
+azd env new regwork-ne
+azd env set AZURE_SUBSCRIPTION_ID "<subscription-id>"
+azd env set AZURE_LOCATION northeurope
+azd env set AZURE_FOUNDRY_LOCATION swedencentral
+azd up
 ```
 
-Add both URLs followed by `/.auth/login/aad/callback` as **Web** redirect URIs on
-the Entra registration. Sign in as the approved user, open **Comparison sources**
-and import the approved documents. Hosted storage is separate from local data.
-Verify that anonymous and unapproved users cannot access either application.
+Current capacity is not guaranteed in any region. The template serializes Foundry
+project, generation-model and embedding-model creation to avoid overlapping
+account writes. A `RequestConflict` can still indicate another deployment is
+active; inspect its state and wait for it to finish before retrying. Do not run
+multiple provisioning operations against the same environment concurrently.
 
-For subsequent releases, build new image tags and redeploy the applications
-stage. Do not rerun bootstrap unless changing indexes, knowledge bases or agents.
-`azure.yaml` also supports `azd deploy api` and `azd deploy ui` after configuring
-an azd environment with `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`,
-`AZURE_CONTAINER_REGISTRY_ENDPOINT`, `SERVICE_API_RESOURCE_NAME` and
-`SERVICE_UI_RESOURCE_NAME` from the foundation outputs. Infrastructure is managed
-by the staged Bicep commands above, not `azd provision` or `azd up`.
+Failed deployments can leave billable resources behind. After checking for data
+you need to retain, clean up the old environment separately with
+`azd down --environment regwork-dev`; do not delete the new environment. Follow
+the Entra and soft-delete cleanup considerations below.
+
+`azd down` removes the ARM resources after confirmation. The tenant-level Entra
+application and service principal are Graph resources and must be removed
+separately through Entra administration using the generated
+`REGULATORY_WORKBENCH_AUTH_CLIENT_ID`,
+`REGULATORY_WORKBENCH_AUTH_APPLICATION_OBJECT_ID` and
+`REGULATORY_WORKBENCH_AUTH_SERVICE_PRINCIPAL_OBJECT_ID` recorded in the azd
+environment. Deleting an application removes its home-tenant service principal.
+Key Vault soft deletion retains a deleted vault for seven days; recreating the same
+environment during that period requires restoring the vault or using a new name.
+
+For direct Azure CLI deployments, `foundation.bicep`, `dev.bicepparam`,
+`prod.bicepparam` and `applications.example.bicepparam` remain available. The
+foundation now provisions Foundry instead of reusing an existing account. That
+manual path still requires running the equivalent authentication, bootstrap and
+image-build steps; use its `environmentName` output for
+`AZURE_CONTAINER_APPS_ENVIRONMENT_NAME`. `azd up` is the complete automated path.

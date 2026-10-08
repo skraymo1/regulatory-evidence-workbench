@@ -2,7 +2,9 @@ targetScope = 'resourceGroup'
 
 @description('Exact foundationName output from the foundation deployment in this resource group.')
 param foundationName string
-param location string = 'swedencentral'
+@description('Actual environmentName output from the foundation deployment.')
+param containerAppsEnvironmentName string = 'cae-net-${foundationName}'
+param location string = 'northeurope'
 @allowed(['dev', 'prod'])
 param profile string = 'dev'
 @description('Immutable image reference already pushed to the foundation registry. No placeholder is deployed.')
@@ -26,7 +28,7 @@ param allowedObjectId string
 param authClientSecret string
 
 resource environment 'Microsoft.App/managedEnvironments@2025-07-01' existing = {
-  name: 'cae-${foundationName}'
+  name: containerAppsEnvironmentName
 }
 resource registry 'Microsoft.ContainerRegistry/registries@2025-04-01' existing = {
   name: replace('cr${foundationName}', '-', '')
