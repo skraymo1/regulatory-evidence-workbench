@@ -15,7 +15,7 @@ param modelName string = 'gpt-5.4-mini'
 param modelVersion string = '2026-03-17'
 param modelDeploymentName string = modelName
 @minValue(1)
-param modelCapacity int = 10
+param modelCapacity int = 250
 param embeddingDeploymentName string = 'text-embedding-3-small'
 @minValue(1)
 param embeddingCapacity int = 10

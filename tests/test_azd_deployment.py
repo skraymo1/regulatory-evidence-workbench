@@ -60,6 +60,21 @@ def secret_metadata(client_id="client", expires=None, enabled=True):
 
 
 class AzdDeploymentTests(unittest.TestCase):
+    def test_generation_capacity_is_configurable_without_changing_embedding_allocation(self):
+        root = Path(__file__).resolve().parents[1]
+        parameters = json.loads(
+            (root / "deployments" / "main.parameters.json").read_text(encoding="utf-8")
+        )["parameters"]
+        self.assertEqual(
+            {"value": "${AZURE_AI_MODEL_CAPACITY=250}"}, parameters["modelCapacity"],
+        )
+        self.assertEqual({"value": 10}, parameters["embeddingCapacity"])
+        for template in ("main.bicep", "foundation.bicep"):
+            with self.subTest(template=template):
+                content = (root / "deployments" / template).read_text(encoding="utf-8")
+                self.assertIn("@minValue(1)\nparam modelCapacity int = 250", content)
+                self.assertIn("@minValue(1)\nparam embeddingCapacity int = 10", content)
+
     def test_preprovision_defaults_base_and_foundry_to_independent_regions(self):
         with patch.dict(os.environ, {"AZURE_ENV_NAME": "regwork-ne"}, clear=True), \
                 patch.object(hooks, "load_env"), \
