@@ -37,9 +37,13 @@ class Settings:
     model_version: str = ""
     allowed_oid: str = ""
     tenant_id: str = ""
+    auth_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> Settings:
+        auth_enabled = os.getenv("POC_AUTH_ENABLED", "true").strip().lower()
+        if auth_enabled not in ("true", "false"):
+            raise ValueError("POC_AUTH_ENABLED must be true or false.")
         return cls(
             agent_mode=os.getenv("POC_AGENT_MODE", "offline").strip().lower(),
             search_mode=os.getenv("POC_SEARCH_MODE", "local").strip().lower(),
@@ -77,14 +81,18 @@ class Settings:
             model_version=os.getenv("POC_MODEL_VERSION", ""),
             allowed_oid=os.getenv("POC_ALLOWED_OID", ""),
             tenant_id=os.getenv("AZURE_TENANT_ID", ""),
+            auth_enabled=auth_enabled == "true",
         )
 
     def validate(self) -> None:
         if os.getenv("CONTAINER_APP_NAME") and (
-            not self.allowed_oid or not self.tenant_id or self.search_mode != "azure"
+            (self.auth_enabled and not self.allowed_oid) or not self.tenant_id or self.search_mode != "azure"
             or not self.source_knowledge_base
         ):
-            raise ValueError("Hosted runtime requires Entra account restriction and Azure storage.")
+            raise ValueError(
+                "Hosted runtime requires Azure storage and tenant configuration, and an Entra "
+                "account restriction unless POC_AUTH_ENABLED=false."
+            )
         if self.source_knowledge_base and not all((
             self.blob_account_url, self.blob_container, self.report_knowledge_base,
             self.agent_version, self.chat_agent_version, self.model_version,

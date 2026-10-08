@@ -20,11 +20,11 @@ param modelVersion string
 param agentVersion string
 param chatAgentVersion string
 param tenantId string
+param authEnabled bool = true
 param authClientId string
 @description('Object ID of the user allowed to access the application.')
 param allowedObjectId string
 @secure()
-@minLength(1)
 param authClientSecret string
 
 resource environment 'Microsoft.App/managedEnvironments@2025-07-01' existing = {
@@ -65,7 +65,8 @@ var variables = {
   POC_AGENT_VERSION: agentVersion
   POC_CHAT_AGENT_NAME: 'fidelity-evidence-chat'
   POC_CHAT_AGENT_VERSION: chatAgentVersion
-  POC_ALLOWED_OID: allowedObjectId
+  POC_AUTH_ENABLED: string(authEnabled)
+  POC_ALLOWED_OID: authEnabled ? allowedObjectId : ''
   AZURE_TENANT_ID: tenantId
 }
 module apps './modules/application.bicep' = [for (service, i) in services: {
@@ -86,6 +87,7 @@ module apps './modules/application.bicep' = [for (service, i) in services: {
     authClientId: authClientId
     authClientSecret: authClientSecret
     allowedObjectId: allowedObjectId
+    authEnabled: authEnabled
   }
 }]
 output apiUrl string = apps[0].outputs.url

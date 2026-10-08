@@ -9,6 +9,7 @@ param modelName string
 param modelVersion string
 param modelCapacity int
 param embeddingCapacity int
+param authEnabled bool = true
 
 module foundation './foundation.bicep' = {
   name: 'foundation'
@@ -24,7 +25,7 @@ module foundation './foundation.bicep' = {
     embeddingCapacity: embeddingCapacity
   }
 }
-module authentication './modules/authentication.bicep' = {
+module authentication './modules/authentication.bicep' = if (authEnabled) {
   name: 'authentication'
   params: {
     environmentName: environmentName
@@ -49,6 +50,6 @@ output embeddingDeployment string = foundation.outputs.embeddingDeployment
 output searchEndpoint string = foundation.outputs.searchEndpoint
 output apiName string = foundation.outputs.applicationNames[0]
 output uiName string = foundation.outputs.applicationNames[1]
-output authClientId string = authentication.outputs.clientId
-output authApplicationObjectId string = authentication.outputs.applicationObjectId
-output authServicePrincipalObjectId string = authentication.outputs.servicePrincipalObjectId
+output authClientId string = authEnabled ? authentication!.outputs.clientId : ''
+output authApplicationObjectId string = authEnabled ? authentication!.outputs.applicationObjectId : ''
+output authServicePrincipalObjectId string = authEnabled ? authentication!.outputs.servicePrincipalObjectId : ''

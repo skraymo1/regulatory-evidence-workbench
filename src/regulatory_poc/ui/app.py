@@ -26,11 +26,16 @@ def _resources() -> tuple[Settings, object]:
 def main() -> None:
     st.set_page_config(page_title="Regulatory Evidence Workbench", layout="wide")
     auth_settings = Settings.from_env()
-    if auth_settings.allowed_oid and not authorize_principal(
+    if auth_settings.auth_enabled and auth_settings.allowed_oid and not authorize_principal(
         st.context.headers, auth_settings.allowed_oid, auth_settings.tenant_id
     ):
         st.error("Access denied. Sign in with the approved Entra account.")
         st.stop()
+    if not auth_settings.auth_enabled:
+        st.warning(
+            "Authentication is disabled. Documents and processing are shared with anyone "
+            "who can reach this app. Use non-sensitive demo data only."
+        )
     st.title("Regulatory Evidence Workbench")
     try:
         settings, repository = _resources()

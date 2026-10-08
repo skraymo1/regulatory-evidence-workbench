@@ -74,6 +74,13 @@ def required(key):
     return value
 
 
+def auth_enabled():
+    value = os.environ.get("AUTH_ENABLED", "true").strip().lower()
+    if value not in ("true", "false"):
+        raise ValueError("AUTH_ENABLED must be true or false.")
+    return value == "true"
+
+
 def register_providers():
     def states():
         return {
@@ -101,6 +108,11 @@ def register_providers():
 
 def preprovision():
     load_env()
+    if not auth_enabled():
+        print(
+            "WARNING: No-auth deployment exposes shared documents and processing endpoints "
+            "publicly. Use non-sensitive demo data only.", flush=True,
+        )
     name = required("AZURE_ENV_NAME")
     if not re.fullmatch(r"[a-z][a-z0-9-]{1,15}", name):
         raise ValueError("Use a 2-16 character environment name: lowercase letters, digits and hyphens.")
@@ -118,7 +130,7 @@ def preprovision():
     save_env("AZURE_LOCATION", os.environ.get("AZURE_LOCATION") or "northeurope")
     save_env("AZURE_FOUNDRY_LOCATION", os.environ.get("AZURE_FOUNDRY_LOCATION") or "swedencentral")
     register_providers()
-    group = f"rg-{name}"
+    group = f"{name}"
     deployed = {}
     if az("group", "exists", "--name", group):
         for app in az("containerapp", "list", "--resource-group", group):
@@ -311,13 +323,20 @@ def application_parameters():
         "embeddingDeployment": "AZURE_AI_EMBEDDING_MODEL",
         "modelDeployment": "AZURE_AI_MODEL_DEPLOYMENT_NAME", "modelVersion": "POC_MODEL_VERSION",
         "agentVersion": "POC_AGENT_VERSION", "chatAgentVersion": "POC_CHAT_AGENT_VERSION",
-        "tenantId": "AZURE_TENANT_ID", "authClientId": "REGULATORY_WORKBENCH_AUTH_CLIENT_ID",
-        "allowedObjectId": "REGULATORY_WORKBENCH_ALLOWED_OBJECT_ID",
+        "tenantId": "AZURE_TENANT_ID",
     }
     parameters = {key: {"value": required(value)} for key, value in mapping.items()}
-    parameters["authClientSecret"] = {
-        "reference": {"keyVault": {"id": required("AZURE_KEY_VAULT_ID")}, "secretName": SECRET_NAME},
-    }
+    enabled = auth_enabled()
+    parameters["authEnabled"] = {"value": enabled}
+    if enabled:
+        parameters["authClientId"] = {"value": required("REGULATORY_WORKBENCH_AUTH_CLIENT_ID")}
+        parameters["allowedObjectId"] = {"value": required("REGULATORY_WORKBENCH_ALLOWED_OBJECT_ID")}
+        parameters["authClientSecret"] = {
+            "reference": {"keyVault": {"id": required("AZURE_KEY_VAULT_ID")}, "secretName": SECRET_NAME},
+        }
+    else:
+        for key in ("authClientId", "allowedObjectId", "authClientSecret"):
+            parameters[key] = {"value": ""}
     return {
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
         "contentVersion": "1.0.0.0", "parameters": parameters,
@@ -360,8 +379,11 @@ def postprovision():
     load_env()
     environment_dir = ROOT / ".azure" / required("AZURE_ENV_NAME")
     environment_dir.mkdir(parents=True, exist_ok=True)
-    print("Initializing Entra credential in Key Vault.", flush=True)
-    ensure_auth_secret()
+    if auth_enabled():
+        print("Initializing Entra credential in Key Vault.", flush=True)
+        ensure_auth_secret()
+    else:
+        print("Skipping Entra credential setup for explicit no-auth deployment.", flush=True)
     bootstrap(environment_dir)
     for service in ("api", "ui"):
         key = f"SERVICE_{service.upper()}_IMAGE"

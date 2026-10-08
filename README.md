@@ -106,8 +106,9 @@ complete workbench:
   network security groups, a Blob private endpoint and linked private DNS zone.
 - Managed identities and scoped RBAC for the applications, Search vectorizer,
   Foundry project identity and bootstrap operator.
-- A single-tenant Entra application/service principal, a generated client secret
-  stored in Key Vault, and sign-in callbacks for both applications.
+- By default, a single-tenant Entra application/service principal, a generated
+  client secret stored in Key Vault, and sign-in callbacks for both applications.
+  The explicit no-auth mode below skips this setup.
 
 All infrastructure resources are defined in Bicep, including the Entra application
 and service principal through the pinned
@@ -127,12 +128,15 @@ No pre-created resources, app registrations, authentication IDs or secrets are
 required. You need an Azure account with an active subscription and access to its
 Entra tenant. The deploying user must be able to create resources and assign
 roles (for example, subscription **Owner**), register resource providers, and
-create an Entra application and service principal in that subscription's tenant.
+create an Entra application and service principal in that subscription's tenant
+when application authentication is enabled.
 Microsoft Graph Bicep deployment requires a work/school tenant identity with
 the delegated `Application.ReadWrite.All` permission; subscription Owner alone
 does not grant directory permissions. Personal Microsoft account authentication
 is not supported by the Graph extension. Use the tenant's work/school identity
-for this deployment.
+for authenticated deployments. No-auth mode skips Graph application registration
+and credential setup, but the hook still reads the signed-in user's directory
+object ID for bootstrap RBAC.
 Tenant policies, subscription restrictions and model quotas cannot be bypassed
 by a template. Restricted organizations may need an administrator to grant these
 permissions or approve model quota first.
@@ -160,6 +164,8 @@ azd env new regwork-dev
 azd up
 ```
 
+`azd up` enables app authentication by default for an environment with no
+auth-mode setting.
 azd selects a subscription; if none has been selected, the hook uses the Azure
 CLI's current subscription. Infrastructure defaults to **North Europe** and
 Foundry defaults independently to **Sweden Central**. Container Apps uses
@@ -198,6 +204,57 @@ from local data. Verify that anonymous and unapproved users cannot access either
 application. Retrieve the URLs later with `azd env get-value UI_URL` and
 `azd env get-value API_URL`.
 
+### Removing application authentication (demo only)
+
+**No-auth mode makes the API and UI public without application login. Anyone
+who reaches them can access shared documents/results and trigger billable
+processing. Use non-sensitive demo data only, never confidential customer or
+regulatory evidence.** Private Blob networking does not protect data exposed
+through these public application endpoints.
+
+After creating an azd environment, set its authentication variable to `false`
+and run the normal `azd up` workflow. This works for a new deployment or removes
+application login from an existing deployment:
+
+```powershell
+azd env set AUTH_ENABLED false -e regwork-dev1 && azd up -e regwork-dev1
+```
+
+To enable or restore Entra authentication:
+
+```powershell
+azd env set AUTH_ENABLED true -e regwork-dev1 && azd up -e regwork-dev1
+```
+
+Replace `regwork-dev1` with your environment name. These PowerShell 7 commands
+use `&&` so deployment runs only if configuration succeeds; you can also run
+the two commands separately. `--environment` / `-e` targets the same environment
+for both commands; omission uses the active environment.
+
+`azd env set` persists the variable in the environment's `.env` file.
+`deployments\main.parameters.json` passes it to the Bicep `authEnabled`
+parameter, and the lifecycle hooks use it to skip Entra setup.
+**Later `azd up` and `azd provision` retain the selected mode.** Authentication
+defaults to `true` when the variable is unset; explicitly set it back to `true`
+to restore login after disabling it. Native `azd up --no-auth` is not supported.
+
+No-auth skips the Entra application/service-principal module and credential
+creation/renewal, disables Container Apps built-in authentication on both apps,
+and disables their in-app principal checks. The UI displays an anonymous-mode
+warning. Azure CLI and azd deployer sign-in are still required; managed identities,
+Foundry/Search/Blob access, Key Vault, and private Blob networking remain.
+Existing Entra objects and credentials are retained, not deleted, when switching
+an authenticated environment to no-auth. Existing Container Apps secrets are left
+untouched while the separate authentication configuration is disabled.
+The configured approved-user object ID is retained for restoring authentication.
+
+Use the full `azd up`, not only `azd provision`, when first adopting these
+changes so both images include support for the runtime auth flag. Wait for
+both application deployments to finish before checking access. After restoring
+authentication, verify anonymous and unapproved users are denied again.
+On timeout or interruption, inspect local configuration and remote deployment
+state before retrying.
+
 ### Configuration
 
 Set these before provisioning; unset values use the defaults in Bicep:
@@ -210,6 +267,7 @@ Set these before provisioning; unset values use the defaults in Bicep:
 | `AZURE_AI_MODEL_NAME` | `gpt-5.4-mini` |
 | `AZURE_AI_MODEL_VERSION` | `2026-03-17`; model versions are pinned without automatic upgrades |
 | `AZURE_AI_MODEL_CAPACITY` | `250`; generation deployment capacity units, subject to model/SKU-specific quota |
+| `AUTH_ENABLED` | `true`; only explicit `false` disables application authentication and skips Entra setup |
 | `REGULATORY_WORKBENCH_ALLOWED_OBJECT_ID` | Deploying user's tenant object ID; override to approve a different single user |
 
 For example, `azd env set REGULATORY_WORKBENCH_PROFILE prod` selects production
@@ -288,7 +346,7 @@ the allocation within available quota. Waiting and retrying alone cannot fix a
 request whose estimated token demand exceeds the deployment's entire token
 limit. See [Azure OpenAI quota and rate-limit guidance](https://learn.microsoft.com/azure/ai-foundry/openai/how-to/quota).
 
-Run `azd provision` periodically to renew the Entra credential when it has fewer
+In authenticated mode, run `azd provision` periodically to renew the Entra credential when it has fewer
 than seven days remaining, including after expiration. Application deployment
 always follows credential initialization, including when Bicep recreates a
 deleted registration and generates a new client ID. Credentials are appended
