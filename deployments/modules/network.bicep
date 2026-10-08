@@ -74,7 +74,7 @@ resource blobEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
   location: location
   tags: tags
   properties: {
-    subnet: { id: vnet.properties.subnets[1].id }
+    subnet: { id: '${vnet.id}/subnets/snet-pe' }
     privateLinkServiceConnections: [
       {
         name: 'blob'
@@ -95,5 +95,5 @@ resource blobZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@
 }
 
 output vnetId string = vnet.id
-output appSubnetId string = vnet.properties.subnets[0].id
+output appSubnetId string = '${vnet.id}/subnets/snet-aca'
 output privateEndpointId string = blobEndpoint.id

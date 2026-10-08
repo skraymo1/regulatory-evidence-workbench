@@ -1,6 +1,7 @@
 param accountName string
 param appPrincipals array
 param searchPrincipal string
+param projectPrincipal string
 
 resource account 'Microsoft.CognitiveServices/accounts@2025-06-01' existing = { name: accountName }
 resource appRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principal in appPrincipals: {
@@ -12,7 +13,7 @@ resource appRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pr
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '53ca6127-db72-4b80-b1b0-d745d6d5456d')
   }
 }]
-resource modelRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principal in concat(appPrincipals, [searchPrincipal]): {
+resource modelRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principal in concat(appPrincipals, [searchPrincipal, projectPrincipal]): {
   name: guid(account.id, principal, 'regulatory-workbench-openai-user')
   scope: account
   properties: {

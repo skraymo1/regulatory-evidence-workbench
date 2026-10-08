@@ -3,16 +3,22 @@ targetScope = 'resourceGroup'
 @minLength(2)
 @maxLength(16)
 param environmentName string
-param location string = 'swedencentral'
+param location string = 'northeurope'
 @allowed(['dev', 'prod'])
 param profile string = 'dev'
 @description('Object ID of the approved bootstrap operator, not an application/client ID.')
 @minLength(36)
 @maxLength(36)
 param operatorObjectId string
-@description('Existing Foundry account, project and model deployments are reused, not provisioned here.')
-param foundryResourceGroup string
-param foundryAccountName string
+param foundryLocation string = 'swedencentral'
+param modelName string = 'gpt-5.4-mini'
+param modelVersion string = '2026-03-17'
+param modelDeploymentName string = modelName
+@minValue(1)
+param modelCapacity int = 10
+param embeddingDeploymentName string = 'text-embedding-3-small'
+@minValue(1)
+param embeddingCapacity int = 10
 @allowed(['basic', 'standard'])
 param searchSku string = 'basic'
 @minValue(1)
@@ -26,6 +32,91 @@ var name = '${environmentName}-${take(uniqueString(resourceGroup().id, environme
 var tags = { environment: environmentName, purpose: 'regulatory-evidence-workbench', profile: profile }
 var services = ['api', 'ui']
 
+resource vault 'Microsoft.KeyVault/vaults@2025-05-01' = {
+  name: 'kv-${take(environmentName, 10)}-${take(uniqueString(resourceGroup().id), 10)}'
+  location: location
+  tags: tags
+  properties: {
+    tenantId: subscription().tenantId
+    sku: { family: 'A', name: 'standard' }
+    enableRbacAuthorization: true
+    enabledForTemplateDeployment: true
+    enableSoftDelete: true
+    softDeleteRetentionInDays: 7
+    publicNetworkAccess: 'Disabled'
+    networkAcls: {
+      bypass: 'AzureServices'
+      defaultAction: 'Deny'
+    }
+  }
+}
+resource operatorVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(vault.id, operatorObjectId, 'key-vault-secrets-officer')
+  scope: vault
+  properties: {
+    principalId: operatorObjectId
+    principalType: 'User'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
+  }
+}
+resource foundryAccount 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
+  name: 'ai-${name}'
+  location: foundryLocation
+  tags: tags
+  kind: 'AIServices'
+  sku: { name: 'S0' }
+  identity: { type: 'SystemAssigned' }
+  properties: {
+    customSubDomainName: 'ai-${name}'
+    allowProjectManagement: true
+    disableLocalAuth: true
+    publicNetworkAccess: 'Enabled'
+  }
+}
+resource foundryProject 'Microsoft.CognitiveServices/accounts/projects@2025-06-01' = {
+  parent: foundryAccount
+  name: 'regulatory-workbench'
+  location: foundryLocation
+  tags: tags
+  identity: { type: 'SystemAssigned' }
+  properties: {
+    displayName: 'Regulatory Evidence Workbench'
+    description: 'Provisional regulatory evidence analysis requiring expert review.'
+  }
+}
+resource generation 'Microsoft.CognitiveServices/accounts/deployments@2025-06-01' = {
+  parent: foundryAccount
+  name: modelDeploymentName
+  sku: { name: 'GlobalStandard', capacity: modelCapacity }
+  properties: {
+    model: { format: 'OpenAI', name: modelName, version: modelVersion }
+    versionUpgradeOption: 'NoAutoUpgrade'
+  }
+  // Project and model writes share an account-level operation lock.
+  dependsOn: [foundryProject]
+}
+resource embeddings 'Microsoft.CognitiveServices/accounts/deployments@2025-06-01' = {
+  parent: foundryAccount
+  name: embeddingDeploymentName
+  sku: { name: 'GlobalStandard', capacity: embeddingCapacity }
+  properties: {
+    model: { format: 'OpenAI', name: 'text-embedding-3-small', version: '1' }
+    versionUpgradeOption: 'NoAutoUpgrade'
+  }
+  dependsOn: [generation]
+}
+resource operatorFoundryRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for role in [
+  '53ca6127-db72-4b80-b1b0-d745d6d5456d'
+  '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
+]: {
+  name: guid(foundryAccount.id, operatorObjectId, role)
+  scope: foundryAccount
+  properties: {
+    principalId: operatorObjectId
+    principalType: 'User'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', role)
+  }
+}]
 resource storage 'Microsoft.Storage/storageAccounts@2025-01-01' = {
   name: replace('st${name}', '-', '')
   location: location
@@ -38,7 +129,11 @@ resource storage 'Microsoft.Storage/storageAccounts@2025-01-01' = {
     allowBlobPublicAccess: false
     allowSharedKeyAccess: false
     defaultToOAuthAuthentication: true
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: 'Disabled'
+    networkAcls: {
+      bypass: 'None'
+      defaultAction: 'Deny'
+    }
   }
 }
 resource blobs 'Microsoft.Storage/storageAccounts/blobServices@2025-01-01' = {
@@ -76,12 +171,25 @@ resource logs 'Microsoft.OperationalInsights/workspaces@2025-02-01' = {
     features: { enableLogAccessUsingOnlyResourcePermissions: true }
   }
 }
+module network './modules/network.bicep' = {
+  name: 'regulatory-workbench-network'
+  params: {
+    name: name
+    location: location
+    tags: tags
+    storageAccountName: storage.name
+  }
+}
 resource appEnvironment 'Microsoft.App/managedEnvironments@2025-07-01' = {
-  name: 'cae-${name}'
+  name: 'cae-net-${name}'
   location: location
   tags: tags
   properties: {
     workloadProfiles: [{ name: 'Consumption', workloadProfileType: 'Consumption' }]
+    vnetConfiguration: {
+      infrastructureSubnetId: network.outputs.appSubnetId
+      internal: false
+    }
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
@@ -123,11 +231,11 @@ module access './modules/access.bicep' = {
 }
 module foundry './modules/foundry-access.bicep' = {
   name: 'regulatory-workbench-foundry-access'
-  scope: resourceGroup(foundryResourceGroup)
   params: {
-    accountName: foundryAccountName
+    accountName: foundryAccount.name
     appPrincipals: [for (service, i) in services: identities[i].properties.principalId]
     searchPrincipal: search.identity.principalId
+    projectPrincipal: foundryProject.identity.principalId
   }
 }
 resource operatorSearchRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for role in [
@@ -163,5 +271,16 @@ output storageAccountName string = storage.name
 output searchName string = search.name
 output searchEndpoint string = 'https://${search.name}.search.windows.net'
 output environmentId string = appEnvironment.id
+output environmentName string = appEnvironment.name
+output environmentDefaultDomain string = appEnvironment.properties.defaultDomain
 output identityNames array = [for (service, i) in services: identities[i].name]
 output applicationNames array = [for service in services: 'ca-${service}-${name}']
+output vaultName string = vault.name
+output vaultId string = vault.id
+output vaultUrl string = vault.properties.vaultUri
+output foundryAccountName string = foundryAccount.name
+output projectEndpoint string = foundryProject.properties.endpoints['AI Foundry API']
+output embeddingEndpoint string = 'https://${foundryAccount.properties.customSubDomainName}.openai.azure.com/'
+output modelDeployment string = generation.name
+output modelVersion string = generation.properties.model.version
+output embeddingDeployment string = embeddings.name

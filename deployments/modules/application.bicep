@@ -20,7 +20,7 @@ param authClientSecret string
 resource app 'Microsoft.App/containerApps@2025-07-01' = {
   name: name
   location: location
-  tags: { purpose: 'regulatory-evidence-workbench', profile: profile }
+  tags: { purpose: 'regulatory-evidence-workbench', profile: profile, 'azd-service-name': service }
   identity: {
     type: 'UserAssigned'
     userAssignedIdentities: { '${identityId}': {} }

@@ -10,6 +10,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from azure.core.exceptions import HttpResponseError
 
 
 SPEC = importlib.util.spec_from_file_location(
@@ -21,6 +22,25 @@ SPEC.loader.exec_module(bootstrap)
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_access_probe_retries_reads_before_any_bootstrap_writes(self):
+        forbidden = HttpResponseError(message="Role not propagated")
+        forbidden.status_code = 403
+        indexes, project = Mock(), Mock()
+        indexes.list_index_names.side_effect = [forbidden, []]
+        project.agents.list.return_value = []
+        with patch.object(bootstrap.time, "sleep"):
+            bootstrap.wait_for_access(indexes, project)
+        self.assertEqual(2, indexes.list_index_names.call_count)
+        indexes.create_or_update_index.assert_not_called()
+        project.agents.create_version.assert_not_called()
+
+    def test_access_probe_surfaces_non_authorization_errors(self):
+        indexes, project = Mock(), Mock()
+        indexes.list_index_names.side_effect = HttpResponseError(message="Service unavailable")
+        with self.assertRaises(HttpResponseError):
+            bootstrap.wait_for_access(indexes, project)
+        project.agents.list.assert_not_called()
+
     def test_missing_configuration_fails_before_azure_access(self):
         with patch.dict(os.environ, {}, clear=True), \
                 patch.object(bootstrap, "DefaultAzureCredential") as credential:
