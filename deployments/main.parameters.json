@@ -10,7 +10,7 @@
     "foundryLocation": { "value": "${AZURE_FOUNDRY_LOCATION=swedencentral}" },
     "modelName": { "value": "${AZURE_AI_MODEL_NAME=gpt-5.4-mini}" },
     "modelVersion": { "value": "${AZURE_AI_MODEL_VERSION=2026-03-17}" },
-    "modelCapacity": { "value": 10 },
+    "modelCapacity": { "value": "${AZURE_AI_MODEL_CAPACITY=250}" },
     "embeddingCapacity": { "value": 10 }
   }
 }

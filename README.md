@@ -209,15 +209,22 @@ Set these before provisioning; unset values use the defaults in Bicep:
 | `AZURE_FOUNDRY_LOCATION` | `swedencentral`; independent Foundry account/project/model region |
 | `AZURE_AI_MODEL_NAME` | `gpt-5.4-mini` |
 | `AZURE_AI_MODEL_VERSION` | `2026-03-17`; model versions are pinned without automatic upgrades |
+| `AZURE_AI_MODEL_CAPACITY` | `250`; generation deployment capacity units, subject to model/SKU-specific quota |
 | `REGULATORY_WORKBENCH_ALLOWED_OBJECT_ID` | Deploying user's tenant object ID; override to approve a different single user |
 
 For example, `azd env set REGULATORY_WORKBENCH_PROFILE prod` selects production
-sizing. Generation and embedding deployment capacities default to 10 units each;
-adjust the numeric `modelCapacity` and `embeddingCapacity` values in
-`deployments\main.parameters.json` to match your subscription's quota. Capacity
-units depend on the model. If Azure reports unavailable models, retired versions
-or insufficient quota, select a supported model/version/region or request quota;
-the deployment does not silently switch models.
+sizing. Generation capacity defaults to 250 units; for the selected GPT-5.4 mini
+Global Standard deployment, this allocates 250,000 tokens/minute and 250
+requests/minute. Use `azd env set AZURE_AI_MODEL_CAPACITY <units>` to choose another
+allocation before provisioning. Embedding capacity remains 10 units; adjust its
+numeric `embeddingCapacity` value in `deployments\main.parameters.json` if needed.
+Capacity units and token/request ratios depend on the model and SKU. Check the
+deployment's reported rate limits rather than assuming every model uses the same
+conversion. Global Standard remains pay-per-token; raising this allocation does
+not buy reserved PTUs, but processing more tokens incurs usage charges.
+If Azure reports unavailable models, retired versions or insufficient quota,
+select a supported model/version/region or request quota; the deployment does
+not silently switch models.
 
 The generation model is used by both workbench agents and live regulatory
 analysis. Its deployment name follows `AZURE_AI_MODEL_NAME`; the embeddings model
@@ -257,6 +264,29 @@ rolling back to initial tags. Unchanged bootstrap configuration reuses the pinne
 agent versions; model/project/Search changes initialize a new set of versions.
 To deliberately rerun bootstrap after changing prompts or index definitions,
 remove `.azure\<environment-name>\bootstrap-state.json` before provisioning.
+
+If processing reports **"the Foundry deployment is rate limited"**, the request
+is reaching Foundry and being throttled; this is not a reason to move the apps
+and Foundry into the same region. Earlier templates allocated only 10,000
+tokens/minute and 10 requests/minute to GPT-5.4 mini. Regulatory analysis can
+screen up to 120,000 characters per request, make multiple model calls per row,
+and process three rows in parallel, so that allocation can be too small even for
+one request. Unused subscription quota does not automatically increase a
+deployment's allocation. To apply the larger allocation to an existing
+environment, after checking its quota:
+
+```powershell
+azd env set AZURE_AI_MODEL_CAPACITY 250 --environment <environment-name>
+azd provision --environment <environment-name>
+```
+
+Keep the existing region, resource group, documents and saved table. After the
+capacity update succeeds, use **Create / resume** or **Process pending
+requirements** to retry failed rows; completed rows are retained. If a larger
+workload still throttles, reduce **Rows processed in parallel** and/or increase
+the allocation within available quota. Waiting and retrying alone cannot fix a
+request whose estimated token demand exceeds the deployment's entire token
+limit. See [Azure OpenAI quota and rate-limit guidance](https://learn.microsoft.com/azure/ai-foundry/openai/how-to/quota).
 
 Run `azd provision` periodically to renew the Entra credential when it has fewer
 than seven days remaining, including after expiration. Application deployment
