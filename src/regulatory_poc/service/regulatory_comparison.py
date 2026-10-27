@@ -18,6 +18,7 @@ from regulatory_poc.service.regulatory_mapping import map_requirement
 from regulatory_poc.service.translation import TRANSLATION_RULES, verify_translation
 from regulatory_poc.types.models import DocumentMetadata, SearchFilters
 from regulatory_poc.types.requirements import Requirement
+from regulatory_poc.service.usage import usage_scope
 
 
 RULE_VERSION = "regulatory-table-v5"
@@ -231,11 +232,15 @@ class RegulatoryTableService:
                            note=("Offline retrieval only; no technical mapping performed." if candidates else
                                  "No candidate retrieved within the selected scope; not proof of absence."))
             else:
-                result = await map_requirement(
-                    self.agent, self.rules, row, self._clauses(report),
-                    [source["source_name"] for source in report["inputs"]["sources"]],
-                    MODEL_TIMEOUT_SECONDS,
-                )
+                with usage_scope(
+                    document_ids=_document_ids(report), report_id=report_id,
+                    requirement_key=key, operation="requirement_comparison",
+                ):
+                    result = await map_requirement(
+                        self.agent, self.rules, row, self._clauses(report),
+                        [source["source_name"] for source in report["inputs"]["sources"]],
+                        MODEL_TIMEOUT_SECONDS,
+                    )
                 outcome = result.pop("outcome")
                 row.update(result, status={
                     "proposed": "proposed", "no_comparable": "no_comparable",
@@ -264,7 +269,11 @@ class RegulatoryTableService:
         if reference is None:
             raise ValueError("No associated same-identifier reference exists; confirm source association and alignment.")
         if article_key not in report["article_checks"]:
-            result = await verify_translation(self.translation_agent, source, reference)
+            with usage_scope(
+                document_ids=[source.document_id, reference.document_id],
+                report_id=report_id, operation="translation_check",
+            ):
+                result = await verify_translation(self.translation_agent, source, reference)
             key = hashlib.sha256(article_key.encode()).hexdigest()
             self.reports.put(f"regulatory-article-checks/{report_id}/{key}.json",
                              {"article_key": article_key, "result": result})
@@ -280,10 +289,13 @@ class RegulatoryTableService:
         if not source or reference is None:
             raise ValueError("No associated translation reference is available for this article.")
         if article_key not in row["translation_checks"]:
-            result = await verify_translation(
-                self.translation_agent, Requirement.from_dict(source),
-                reference,
-            )
+            with usage_scope(
+                document_ids=[source["document_id"], reference.document_id],
+                report_id=report_id, operation="translation_check",
+            ):
+                result = await verify_translation(
+                    self.translation_agent, Requirement.from_dict(source), reference,
+                )
             key = hashlib.sha256(f"{requirement_key}:{article_key}".encode()).hexdigest()
             self.reports.put(f"regulatory-translations/{report_id}/{key}.json", {
                 "requirement_key": requirement_key, "article_key": article_key, "result": result,
@@ -322,6 +334,13 @@ class RegulatoryTableService:
             raise RuntimeError("Table saved; report indexing failed. Retry without regenerating.") from exc
         self.reports.put(f"regulatory-index-state/{report_id}.json", {"digest": _row_digest(report)})
         return self.get(report_id)
+
+
+def _document_ids(report: dict) -> list[str]:
+    return list(dict.fromkeys([
+        report["inputs"]["baseline"]["document_id"],
+        *(source["document_id"] for source in report["inputs"]["sources"]),
+    ]))
 
 
 def _row_digest(report: dict) -> str:

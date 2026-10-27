@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from regulatory_poc.service.usage import UsageTracker, model_call
+
 
 class EmbeddingProvider(Protocol):
     def embed(self, text: str) -> list[float]: ...
 
 
 class FoundryEmbeddingProvider:
-    def __init__(self, endpoint: str, model: str) -> None:
+    def __init__(self, endpoint: str, model: str, usage: UsageTracker | None = None) -> None:
+        self._model, self._usage = model, usage
         self._openai = None
         if ".openai.azure.com" in endpoint:
             from openai import AzureOpenAI
@@ -36,10 +39,12 @@ class FoundryEmbeddingProvider:
         )
 
     def embed(self, text: str) -> list[float]:
-        response = (
-            self._openai.embeddings.create(input=[text], model=self._model)
-            if self._openai else self._client.embed(input=[text])
-        )
+        with model_call(self._usage, self._model, "embedding", embedding=True) as call:
+            response = (
+                self._openai.embeddings.create(input=[text], model=self._model)
+                if self._openai else self._client.embed(input=[text])
+            )
+            call.response = response
         if not response.data:
             raise RuntimeError("The embedding deployment returned no vector.")
         return [float(value) for value in response.data[0].embedding]

@@ -4,6 +4,7 @@ import re
 
 from regulatory_poc.repo.agents import ComparisonAgent
 from regulatory_poc.repo.search import SearchRepository
+from regulatory_poc.service.usage import usage_scope
 from regulatory_poc.types.models import (
     Citation,
     ComparisonRequest,
@@ -77,7 +78,11 @@ class RegulatoryComparisonService:
             edition_a_hits,
             edition_b_hits,
         )
-        answer = await self._agent.compare(prompt)
+        with usage_scope(
+            document_ids=[request.document_a_id, request.document_b_id],
+            operation="edition_comparison",
+        ):
+            answer = await self._agent.compare(prompt)
         if "insufficient evidence" in answer.casefold() and not re.search(
             r"\[([AB]\d+)\]", answer
         ):

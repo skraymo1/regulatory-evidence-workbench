@@ -6,12 +6,14 @@ from azure.core.exceptions import AzureError
 
 from regulatory_poc.repo.documents import chunk_document, make_document_id
 from regulatory_poc.repo.blob import BlobDocumentStore
+from regulatory_poc.repo.blob_browser import BlobStorageBrowser
 from regulatory_poc.repo.regulatory_store import RecordStore, SourceStore
 from regulatory_poc.repo.requirement_extraction import extract_requirements
 from regulatory_poc.repo.requirement_paragraphs import supporting_paragraphs
 from regulatory_poc.repo.search import SearchRepository
 from regulatory_poc.types.models import DocumentMetadata
 from regulatory_poc.types.requirements import Requirement
+from regulatory_poc.service.usage import timestamp, usage_scope
 
 
 ROLES = ("Reference baseline", "National regulation", "Translation reference")
@@ -83,6 +85,7 @@ class RegulatoryLibrary:
         self, content: bytes, name: str, role: str, language: str,
         standard: str = "", revision: str = "",
         jurisdiction: str = "", extraction_profile: str = "auto",
+        *, stored_source: DocumentMetadata | None = None,
     ) -> dict:
         if role not in {*ROLES, *KINDS}:
             raise ValueError("Select a supported document role.")
@@ -94,8 +97,8 @@ class RegulatoryLibrary:
         jurisdiction = jurisdiction or document_jurisdiction({"role": role})
         if role == "Reference baseline" and (standard != "Reference standard" or revision != "Rev. 1"):
             raise ValueError("The current complete inventory supports Reference standard Rev. 1 only.")
-        metadata = DocumentMetadata(
-            document_id=make_document_id(name, content), title=name,
+        metadata = replace(
+            stored_source or DocumentMetadata(make_document_id(name, content), name, ""),
             authority="reference" if role == "Reference baseline" else role,
             country="" if role == "Reference baseline" else jurisdiction,
             language=language, standard=standard, revision=revision, source_name=name,
@@ -113,24 +116,81 @@ class RegulatoryLibrary:
                     "This file is already imported with different metadata, role or extraction profile. "
                     "Use the saved source; changes require an explicit reviewed migration, not re-import."
                 )
-            return existing if existing.get("indexing_status") == "indexed" else self.retry_index(metadata.document_id)
-        inventory = extract_requirements(content, metadata, kind=profile)
-        if not inventory.requirements:
-            raise ValueError("No requirements extracted. Verify the document format before importing.")
-        metadata = self.sources.save(content, metadata)
+            if existing.get("requirements"):
+                return existing if existing.get("indexing_status") == "indexed" else self.retry_index(metadata.document_id)
+        if stored_source is not None:
+            if not isinstance(self.sources, BlobDocumentStore):
+                raise ValueError("Existing Blob imports require Azure Blob source storage.")
+            metadata = self.sources.register_existing(content, metadata)
+        else:
+            metadata = self.sources.save(content, metadata)
         record = {
             "metadata": metadata.to_dict(), "role": role, "jurisdiction": metadata.country,
             "extraction_profile": profile,
-            "requirements": [item.to_dict() for item in inventory.requirements],
-            "warnings": list(inventory.warnings), "complete": inventory.complete,
+            "requirements": [], "warnings": [], "complete": False,
             "extraction_version": EXTRACTION_VERSION,
             "indexing_status": "pending", "approval_status": "unapproved",
+            "uploaded_at": (existing or {}).get("uploaded_at", timestamp()),
+            "updated_at": timestamp(), "size_bytes": len(content),
         }
+        self.state.put(f"regulatory-documents/{metadata.document_id}.json", record)
+        try:
+            inventory = extract_requirements(content, metadata, kind=profile)
+            if not inventory.requirements:
+                raise ValueError("No requirements extracted. Verify the document format before importing.")
+        except (RuntimeError, ValueError, OSError, AzureError) as exc:
+            record.update(indexing_status="failed", indexing_error=str(exc), updated_at=timestamp())
+            self.state.put(f"regulatory-documents/{metadata.document_id}.json", record)
+            raise
+        record.update(
+            requirements=[item.to_dict() for item in inventory.requirements],
+            warnings=list(inventory.warnings), complete=inventory.complete,
+        )
         self.state.put(f"regulatory-documents/{metadata.document_id}.json", record)
         return self.retry_index(metadata.document_id)
 
+    def import_blob_document(
+        self, browser: BlobStorageBrowser, container: str, name: str, role: str, language: str,
+        standard: str = "", revision: str = "", jurisdiction: str = "",
+        extraction_profile: str = "auto",
+    ) -> dict:
+        if not isinstance(self.sources, BlobDocumentStore):
+            raise ValueError("Existing Blob imports require Azure Blob source storage.")
+        content, uri = browser.read_pdf(container, name)
+        digest = hashlib.sha256(content).hexdigest()
+        saved = next((
+            DocumentMetadata.from_dict(item["metadata"])
+            for item in self.state.list("documents/")
+            if browser.matches_source(item["metadata"].get("source_uri", ""), container, name)
+            and item["metadata"].get("source_version") == digest
+        ), None)
+        source_name = saved.source_name if saved else name.rsplit("/", 1)[-1]
+        metadata = replace(
+            saved or DocumentMetadata(make_document_id(source_name, content), source_name, ""),
+            source_kind="blob", source_uri=uri, source_version=digest,
+        )
+        return self.import_document(
+            content, source_name, role, language, standard, revision, jurisdiction, extraction_profile,
+            stored_source=metadata,
+        )
+
+    def retry_processing(self, document_id: str) -> dict:
+        record = self.get(document_id)
+        if record.get("requirements"):
+            return self.retry_index(document_id)
+        metadata = DocumentMetadata.from_dict(record["metadata"])
+        content, _ = self.sources.download_version(metadata)
+        return self.import_document(
+            content, metadata.source_name, record["role"], metadata.language,
+            metadata.standard, metadata.revision, record.get("jurisdiction", ""),
+            record.get("extraction_profile", "auto"),
+            stored_source=metadata if metadata.source_kind == "blob" else None,
+        )
+
     def retry_index(self, document_id: str) -> dict:
         record = self.get(document_id)
+        if not record["requirements"]:
+            raise ValueError("No requirement inventory is available; retry document processing first.")
         metadata = DocumentMetadata.from_dict(record["metadata"])
         chunks = []
         for requirement in self.requirements(document_id):
@@ -140,15 +200,18 @@ class RegulatoryLibrary:
                 chunks.append(replace(chunk, chunk_id=key, text=prefix + chunk.text))
         try:
             # Bound each SDK upload request; individual vector calls remain metered.
-            for start in range(0, len(chunks), 100):
-                self.search.upsert(chunks[start:start + 100])
+            with usage_scope(document_ids=[document_id], operation="document_indexing"):
+                for start in range(0, len(chunks), 100):
+                    self.search.upsert(chunks[start:start + 100])
         except (RuntimeError, ValueError, OSError, AzureError) as exc:
             record["indexing_error"] = str(exc)
+            record.update(indexing_status="failed", updated_at=timestamp())
             self.state.put(f"regulatory-documents/{document_id}.json", record)
             raise RuntimeError("Source saved, but indexing failed. Retry in Comparison sources.") from exc
         record["indexing_status"] = "indexed"
+        record.update(chunks_indexed=len(chunks), processed_at=timestamp(), updated_at=timestamp())
         record.pop("indexing_error", None)
         self.state.put(f"regulatory-documents/{document_id}.json", record)
-        if isinstance(self.sources, BlobDocumentStore):
+        if isinstance(self.sources, BlobDocumentStore) or getattr(self.sources, "state", None) is not None:
             self.sources.indexed(document_id)
         return record

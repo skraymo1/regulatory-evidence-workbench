@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from functools import lru_cache
 from dataclasses import asdict
+from datetime import date
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from azure.core.exceptions import AzureError
 from pydantic import BaseModel, Field
 
@@ -18,7 +20,11 @@ from regulatory_poc.runtime.container import (
     build_search_repository,
     build_sync_service,
     build_report_search,
+    build_usage_tracker,
+    build_blob_browser,
 )
+from regulatory_poc.runtime.regulatory import build_regulatory_service
+from regulatory_poc.service.document_admin import DocumentAdminService
 from regulatory_poc.service.authorization import authorize_principal
 from regulatory_poc.service.uploads import ingest_bytes
 from regulatory_poc.service.ingestion import SourceSyncService
@@ -127,6 +133,92 @@ def health() -> dict[str, str]:
 def list_documents() -> list[dict[str, str]]:
     _, repository, _, _ = _available_runtime()
     return [document.to_dict() for document in repository.list_documents()]
+
+
+def _document_admin() -> DocumentAdminService:
+    settings, repository, _, _ = _available_runtime()
+    return DocumentAdminService(
+        build_regulatory_service(settings, repository), repository, build_usage_tracker(settings),
+        build_blob_browser(settings),
+    )
+
+
+@app.get("/admin/documents")
+def admin_documents() -> list[dict]:
+    try:
+        return _document_admin().documents()
+    except (RuntimeError, ValueError, OSError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _blob_browser():
+    settings, _, _, _ = _available_runtime()
+    browser = build_blob_browser(settings)
+    if browser is None:
+        raise HTTPException(status_code=422, detail="Blob storage is not configured.")
+    return browser
+
+
+@app.get("/admin/storage/containers")
+def admin_storage_containers() -> list[dict]:
+    return _blob_browser().containers()
+
+
+@app.get("/admin/storage/{container}/entries")
+def admin_storage_entries(
+    container: str, prefix: str = "", continuation_token: str | None = None,
+) -> dict:
+    return _blob_browser().entries(container, prefix, continuation_token)
+
+
+@app.get("/admin/storage/{container}/preview")
+def admin_storage_preview(container: str, name: str) -> dict:
+    return _blob_browser().preview(container, name)
+
+
+@app.get("/admin/storage/{container}/content")
+def admin_storage_content(container: str, name: str) -> StreamingResponse:
+    stream = _blob_browser().download(container, name)
+    filename = quote(name.rsplit("/", 1)[-1], safe="")
+    return StreamingResponse(
+        stream.chunks(), media_type="application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )
+
+
+@app.post("/admin/documents/{document_id}/retry")
+def retry_admin_document(document_id: str) -> dict:
+    try:
+        _document_admin().retry(document_id)
+        return {"document_id": document_id, "status": "indexed"}
+    except (RuntimeError, ValueError, OSError) as exc:
+        raise HTTPException(status_code=422 if isinstance(exc, ValueError) else 503, detail=str(exc)) from exc
+
+
+@app.get("/admin/documents/{document_id}/processed")
+def admin_processed_document(document_id: str) -> dict:
+    try:
+        return _document_admin().processed(document_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/admin/model-usage")
+def admin_model_usage(
+    document_id: str = "", model: str = "", operation: str = "",
+    start_date: date | None = None, end_date: date | None = None,
+) -> dict:
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=422, detail="Start date must not follow end date.")
+    try:
+        return _document_admin().usage_report(
+            document_id, model, operation,
+            start_date.isoformat() if start_date else "", end_date.isoformat() if end_date else "",
+        )
+    except (RuntimeError, ValueError, OSError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/documents", status_code=201)

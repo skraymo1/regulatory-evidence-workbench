@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Protocol
 
 from regulatory_poc.repo.embeddings import EmbeddingProvider
+from regulatory_poc.service.usage import usage_scope
 from regulatory_poc.types.models import (
     DocumentChunk,
     DocumentMetadata,
@@ -65,6 +66,8 @@ class SearchRepository(Protocol):
     ) -> list[SearchHit]: ...
 
     def list_documents(self) -> list[DocumentMetadata]: ...
+
+    def list_chunks(self, document_id: str) -> list[DocumentChunk]: ...
 
     def delete_document(self, document_id: str) -> None: ...
 
@@ -139,6 +142,12 @@ class JsonSearchRepository:
         }
         return sorted(documents.values(), key=lambda value: (value.authority, value.title))
 
+    def list_chunks(self, document_id: str) -> list[DocumentChunk]:
+        return sorted(
+            (chunk for chunk in self._chunks.values() if chunk.metadata.document_id == document_id),
+            key=lambda chunk: (chunk.ordinal, chunk.chunk_id),
+        )
+
     def delete_document(self, document_id: str) -> None:
         self._chunks = {
             key: chunk
@@ -182,7 +191,8 @@ class AzureAISearchRepository:
                 **chunk.metadata.to_dict(),
             }
             if self._embedding_provider:
-                document["content_vector"] = self._embedding_provider.embed(chunk.text)
+                with usage_scope(document_ids=[chunk.metadata.document_id]):
+                    document["content_vector"] = self._embedding_provider.embed(chunk.text)
             documents.append(document)
         results = self._client.upload_documents(documents=documents)
         failures = [result.key for result in results if not result.succeeded]
@@ -208,9 +218,14 @@ class AzureAISearchRepository:
         if self._embedding_provider:
             from azure.search.documents.models import VectorizedQuery
 
+            with usage_scope(
+                document_ids=[document_id] if document_id else list(filters.document_ids) if filters else [],
+                operation="query_embedding",
+            ):
+                vector = self._embedding_provider.embed(query)
             arguments["vector_queries"] = [
                 VectorizedQuery(
-                    vector=self._embedding_provider.embed(query),
+                    vector=vector,
                     k_nearest_neighbors=max(top_k * 3, 20),
                     fields="content_vector",
                 )
@@ -238,6 +253,22 @@ class AzureAISearchRepository:
             for result in results
         }
         return sorted(documents.values(), key=lambda value: (value.authority, value.title))
+
+    def list_chunks(self, document_id: str) -> list[DocumentChunk]:
+        results = self._client.search(
+            search_text="*", filter=_odata_filter(document_id, None),
+            select=["id", "content", "ordinal", *DocumentMetadata.__dataclass_fields__],
+        )
+        chunks = [
+            DocumentChunk(
+                chunk_id=str(result["id"]), text=str(result["content"]),
+                ordinal=int(result["ordinal"]), metadata=DocumentMetadata.from_dict(result),
+            )
+            for result in results
+        ]
+        if any(chunk.metadata.document_id != document_id for chunk in chunks):
+            raise RuntimeError("The index returned passages outside the selected document.")
+        return sorted(chunks, key=lambda chunk: (chunk.ordinal, chunk.chunk_id))
 
     def delete_document(self, document_id: str) -> None:
         escaped = document_id.replace("'", "''")

@@ -6,6 +6,7 @@ import os
 import tempfile
 from dataclasses import replace
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Protocol
 
 from regulatory_poc.types.models import DocumentMetadata
@@ -20,6 +21,15 @@ class RecordStore(Protocol):
 class SourceStore(Protocol):
     def save(self, content: bytes, metadata: DocumentMetadata) -> DocumentMetadata: ...
     def download_version(self, metadata: DocumentMetadata) -> tuple[bytes, DocumentMetadata]: ...
+
+
+def update_document_record(state: RecordStore, document_id: str, status: str, **values) -> None:
+    key = f"documents/{document_id}.json"
+    record = state.get(key)
+    if record is None:
+        raise ValueError("Source manifest missing; upload the source bytes first.")
+    record.update(indexing_status=status, updated_at=datetime.now(timezone.utc).isoformat(), **values)
+    state.put(key, record)
 
 
 class LocalRecordStore:
@@ -61,15 +71,37 @@ class LocalRecordStore:
 
 
 class LocalSourceStore:
-    def __init__(self, root: Path) -> None:
-        self.root = root
+    def __init__(self, root: Path, state: RecordStore | None = None) -> None:
+        self.root, self.state = root, state
 
     def save(self, content: bytes, metadata: DocumentMetadata) -> DocumentMetadata:
         digest = hashlib.sha256(content).hexdigest()
         self.root.mkdir(parents=True, exist_ok=True)
         path = self.root / digest
         path.write_bytes(content)
-        return replace(metadata, source_version=digest, source_uri=path.resolve().as_uri())
+        metadata = replace(metadata, source_version=digest, source_uri=path.resolve().as_uri())
+        if self.state is not None:
+            now = datetime.now(timezone.utc).isoformat()
+            prior = self.state.get(f"documents/{metadata.document_id}.json") or {}
+            self.state.put(f"documents/{metadata.document_id}.json", {
+                "metadata": metadata.to_dict(), "indexing_status": "pending",
+                "approval_status": "unapproved", "size_bytes": len(content),
+                "uploaded_at": prior.get("uploaded_at", now), "updated_at": now,
+            })
+        return metadata
+
+    def mark(self, document_id: str, status: str, **values) -> None:
+        if self.state is not None:
+            update_document_record(self.state, document_id, status, **values)
+
+    def indexed(self, document_id: str) -> None:
+        self.mark(document_id, "indexed")
+
+    def download(self, document_id: str) -> tuple[bytes, DocumentMetadata]:
+        record = self.state.get(f"documents/{document_id}.json") if self.state else None
+        if record is None:
+            raise ValueError("Document not found; verify its identifier.")
+        return self.download_version(DocumentMetadata.from_dict(record["metadata"]))
 
     def download_version(self, metadata: DocumentMetadata) -> tuple[bytes, DocumentMetadata]:
         digest = metadata.source_version

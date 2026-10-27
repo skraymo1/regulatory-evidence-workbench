@@ -22,6 +22,9 @@ from regulatory_poc.ui.regulatory_processing import (
     DEFAULT_PARALLEL_ROWS, PARALLEL_ROW_CHOICES, process_requirements,
 )
 from regulatory_poc.ui.regulatory_translation import translation_scope
+from regulatory_poc.runtime.container import build_usage_tracker, build_blob_browser
+from regulatory_poc.service.document_admin import DocumentAdminService
+from regulatory_poc.ui.document_admin import document_admin, model_usage
 
 
 def regulatory_panel(settings, repository) -> None:
@@ -35,8 +38,9 @@ def regulatory_panel(settings, repository) -> None:
         "All Reference standard requirements plus unmatched national rows. Exact source text is separate from proposed "
         "analysis and translation. qualified expert review is required; no compliance certification."
     )
-    work, sources, saved, chat = st.tabs([
+    work, sources, saved, chat, admin_tab, usage_tab = st.tabs([
         "Comparisons", "Comparison sources", "Saved comparison tables", "Ask evidence",
+        "Document admin", "Model usage & costs",
     ])
     try:
         with sources:
@@ -92,6 +96,13 @@ def regulatory_panel(settings, repository) -> None:
                 render_table(service, service.get(report_id), "saved")
         with chat:
             evidence_chat(settings, repository, service.report_search, documents, reports)
+        admin = DocumentAdminService(
+            service, repository, build_usage_tracker(settings), build_blob_browser(settings),
+        )
+        with admin_tab:
+            document_admin(admin)
+        with usage_tab:
+            model_usage(admin)
     except (RuntimeError, ValueError, OSError, AzureError) as exc:
         st.error(str(exc))
 

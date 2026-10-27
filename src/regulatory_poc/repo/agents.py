@@ -6,6 +6,8 @@ import threading
 import time
 from typing import Any, Protocol
 
+from regulatory_poc.service.usage import UsageTracker, model_call
+
 TOKEN_REFRESH_MARGIN_SECONDS = 300
 CREDENTIAL_PROCESS_TIMEOUT_SECONDS = 30
 MODEL_RETRY_DELAYS_SECONDS = (5, 15)
@@ -124,10 +126,12 @@ class FoundryComparisonAgent:
     def __init__(
         self, project_endpoint: str, model_deployment_name: str,
         instructions: str = "",
+        usage: UsageTracker | None = None,
     ) -> None:
         self._project_endpoint = project_endpoint
         self._model_deployment_name = model_deployment_name
         self._instructions = instructions
+        self._usage = usage
 
     async def compare(self, prompt: str) -> str:
         return await self._run(prompt, "compare")
@@ -172,7 +176,10 @@ class FoundryComparisonAgent:
 
         for attempt in range(len(MODEL_RETRY_DELAYS_SECONDS) + 1):
             try:
-                return str(await agent.run(prompt))
+                with model_call(self._usage, self._model_deployment_name, mode) as call:
+                    response = await agent.run(prompt)
+                    call.response = response
+                    return str(response)
             except AgentFrameworkException as exc:
                 if attempt < len(MODEL_RETRY_DELAYS_SECONDS) and _transient(exc):
                     await asyncio.sleep(MODEL_RETRY_DELAYS_SECONDS[attempt])

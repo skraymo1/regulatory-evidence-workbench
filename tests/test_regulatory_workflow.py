@@ -243,7 +243,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     self.library.import_document(b"source bytes", "test.pdf", "UK", "English")
         key = make_document_id("test.pdf", b"source bytes")
         record = self.library.get(key)
-        self.assertEqual("pending", record["indexing_status"])
+        self.assertEqual("failed", record["indexing_status"])
         content, _ = self.library.sources.download_version(DocumentMetadata.from_dict(record["metadata"]))
         self.assertEqual(b"source bytes", content)
 

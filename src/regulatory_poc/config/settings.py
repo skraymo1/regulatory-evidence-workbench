@@ -38,6 +38,7 @@ class Settings:
     allowed_oid: str = ""
     tenant_id: str = ""
     auth_enabled: bool = True
+    model_pricing: str = "{}"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -82,9 +83,13 @@ class Settings:
             allowed_oid=os.getenv("POC_ALLOWED_OID", ""),
             tenant_id=os.getenv("AZURE_TENANT_ID", ""),
             auth_enabled=auth_enabled == "true",
+            model_pricing=os.getenv("POC_MODEL_PRICING_USD_PER_MILLION", "{}"),
         )
 
     def validate(self) -> None:
+        from regulatory_poc.service.usage import parse_pricing
+
+        parse_pricing(self.model_pricing)
         if os.getenv("CONTAINER_APP_NAME") and (
             (self.auth_enabled and not self.allowed_oid) or not self.tenant_id or self.search_mode != "azure"
             or not self.source_knowledge_base
