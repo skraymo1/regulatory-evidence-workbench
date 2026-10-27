@@ -4,6 +4,8 @@ import asyncio
 import json
 from pathlib import Path
 
+from regulatory_poc.service.usage import UsageTracker, model_call
+
 
 def fidelity_rules() -> dict:
     return json.loads(
@@ -12,8 +14,12 @@ def fidelity_rules() -> dict:
 
 
 class PersistedFoundryAgent:
-    def __init__(self, endpoint: str, name: str, version: str) -> None:
+    def __init__(
+        self, endpoint: str, name: str, version: str,
+        usage: UsageTracker | None = None, model: str = "",
+    ) -> None:
         self.endpoint, self.name, self.version = endpoint, name, version
+        self._usage, self._model = usage, model
 
     async def compare(self, prompt: str) -> str:
         return await asyncio.to_thread(self._run, prompt)
@@ -28,12 +34,14 @@ class PersistedFoundryAgent:
         with DefaultAzureCredential() as credential:
             with AIProjectClient(endpoint=self.endpoint, credential=credential) as project:
                 with project.get_openai_client() as client:
-                    response = client.responses.create(
-                        input=prompt,
-                        extra_body={"agent_reference": {
-                            "name": self.name, "version": self.version, "type": "agent_reference",
-                        }},
-                    )
-                    if response.status != "completed":
-                        raise RuntimeError("Foundry agent did not complete; retry the request.")
+                    with model_call(self._usage, self._model, "persisted_agent") as call:
+                        response = client.responses.create(
+                            input=prompt,
+                            extra_body={"agent_reference": {
+                                "name": self.name, "version": self.version, "type": "agent_reference",
+                            }},
+                        )
+                        call.response = response
+                        if response.status != "completed":
+                            raise RuntimeError("Foundry agent did not complete; retry the request.")
                     return response.output_text

@@ -4,6 +4,16 @@ param storageAccountName string
 param principals array
 resource acr 'Microsoft.ContainerRegistry/registries@2025-04-01' existing = { name: acrName }
 resource search 'Microsoft.Search/searchServices@2025-05-01' existing = { name: searchName }
+resource storage 'Microsoft.Storage/storageAccounts@2025-01-01' existing = { name: storageAccountName }
+resource storageBrowse 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principal in principals: {
+  name: guid(storage.id, principal, 'blob-account-reader')
+  scope: storage
+  properties: {
+    principalId: principal
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1')
+  }
+}]
 resource acrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principal in principals: {
   name: guid(acr.id, principal, 'acrpull')
   scope: acr

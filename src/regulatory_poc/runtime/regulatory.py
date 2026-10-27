@@ -8,7 +8,7 @@ from regulatory_poc.repo.agents import FoundryComparisonAgent
 from regulatory_poc.repo.blob import BlobJsonStore
 from regulatory_poc.repo.regulatory_store import LocalRecordStore, LocalSourceStore
 from regulatory_poc.repo.search import JsonSearchRepository
-from regulatory_poc.runtime.container import build_report_search, build_search_repository, build_state_store
+from regulatory_poc.runtime.container import build_report_search, build_search_repository, build_state_store, build_usage_tracker
 from regulatory_poc.service.regulatory_comparison import RegulatoryTableService
 from regulatory_poc.service.regulatory_library import RegulatoryLibrary
 from regulatory_poc.service.translation import TRANSLATION_RULES
@@ -24,7 +24,7 @@ def build_regulatory_service(settings: Settings, repository=None) -> RegulatoryT
         report_search = build_report_search(settings)
     else:
         state = LocalRecordStore(root)
-        sources = LocalSourceStore(root / "sources")
+        sources = LocalSourceStore(root / "sources", state)
         reports = state
         report_search = JsonSearchRepository(root / "report-index.json")
     rules = json.loads(
@@ -33,6 +33,7 @@ def build_regulatory_service(settings: Settings, repository=None) -> RegulatoryT
     agent = FoundryComparisonAgent(
         settings.foundry_project_endpoint, settings.model_deployment_name,
         instructions=rules["instructions"],
+        usage=build_usage_tracker(settings),
     ) if settings.agent_mode == "foundry" else None
     return RegulatoryTableService(
         RegulatoryLibrary(state, sources, repository), reports, agent, rules,
@@ -42,5 +43,6 @@ def build_regulatory_service(settings: Settings, repository=None) -> RegulatoryT
         FoundryComparisonAgent(
             settings.foundry_project_endpoint, settings.model_deployment_name,
             instructions=TRANSLATION_RULES,
+            usage=build_usage_tracker(settings),
         ) if settings.agent_mode == "foundry" else None,
     )

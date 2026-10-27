@@ -6,6 +6,7 @@ import uuid
 from regulatory_poc.repo.agents import ComparisonAgent
 from regulatory_poc.repo.conversations import JsonConversationRepository
 from regulatory_poc.repo.search import SearchRepository
+from regulatory_poc.service.usage import usage_scope
 from regulatory_poc.types.models import (
     ChatMessage,
     ChatRequest,
@@ -48,7 +49,11 @@ class RegulatoryChatService:
             )
             sufficient = False
         else:
-            answer = await self._agent.answer(_chat_prompt(question, history, hits))
+            with usage_scope(
+                document_ids=sorted({hit.chunk.metadata.document_id for hit in hits}),
+                operation="evidence_chat",
+            ):
+                answer = await self._agent.answer(_chat_prompt(question, history, hits))
             error = _chat_citation_error(answer, citations)
             sufficient = not error and "insufficient evidence" not in answer.casefold()
             if error:

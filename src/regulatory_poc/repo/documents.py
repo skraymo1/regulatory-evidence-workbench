@@ -4,6 +4,9 @@ import hashlib
 import io
 import re
 from pathlib import Path
+from zipfile import BadZipFile
+
+from pypdf.errors import PyPdfError
 
 from regulatory_poc.types.models import DocumentChunk, DocumentMetadata
 
@@ -26,8 +29,11 @@ def extract_text(file_name: str, content: bytes) -> str:
             raise RuntimeError(
                 "PDF ingestion requires pypdf. Run 'python -m pip install --pre -e .'."
             ) from exc
-        reader = PdfReader(io.BytesIO(content))
-        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        try:
+            reader = PdfReader(io.BytesIO(content))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        except PyPdfError as exc:
+            raise ValueError(f"Cannot read '{file_name}'; provide a valid, unlocked PDF.") from exc
     else:
         try:
             from docx import Document
@@ -35,7 +41,10 @@ def extract_text(file_name: str, content: bytes) -> str:
             raise RuntimeError(
                 "DOCX ingestion requires python-docx. Run 'python -m pip install --pre -e .'."
             ) from exc
-        document = Document(io.BytesIO(content))
+        try:
+            document = Document(io.BytesIO(content))
+        except BadZipFile as exc:
+            raise ValueError(f"Cannot read '{file_name}'; provide a valid DOCX document.") from exc
         paragraphs = [paragraph.text for paragraph in document.paragraphs]
         table_cells = [
             cell.text

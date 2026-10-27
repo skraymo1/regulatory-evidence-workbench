@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from regulatory_poc.config.settings import Settings
 from regulatory_poc.runtime.regulatory import build_regulatory_service
+from regulatory_poc.runtime.container import build_blob_browser
 from regulatory_poc.types.models import DocumentMetadata
 
 
@@ -25,6 +26,17 @@ class CountryTableBody(BaseModel):
 
 class RowBody(BaseModel):
     requirement_key: str = Field(min_length=1)
+
+
+class BlobDocumentBody(BaseModel):
+    container: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    role: str = Field(min_length=1)
+    language: str = Field(min_length=1)
+    standard: str = ""
+    revision: str = ""
+    jurisdiction: str = ""
+    extraction_profile: str = "auto"
 
 
 class TranslationBody(RowBody):
@@ -72,7 +84,22 @@ async def import_document(
 @router.post("/documents/{document_id}/retry-index")
 def retry_source(document_id: str) -> dict:
     try:
-        return _service().library.retry_index(document_id)
+        return _service().library.retry_processing(document_id)
+    except (RuntimeError, ValueError, OSError) as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/documents/from-blob", status_code=201)
+def import_blob_document(body: BlobDocumentBody) -> dict:
+    try:
+        settings = Settings.from_env()
+        browser = build_blob_browser(settings)
+        if browser is None:
+            raise ValueError("Blob storage is not configured.")
+        return _service().library.import_blob_document(
+            browser, body.container, body.name, body.role, body.language,
+            body.standard, body.revision, body.jurisdiction, body.extraction_profile,
+        )
     except (RuntimeError, ValueError, OSError) as exc:
         raise _translate_error(exc) from exc
 

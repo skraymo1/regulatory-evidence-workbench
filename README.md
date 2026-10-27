@@ -50,6 +50,99 @@ python -m unittest discover -s tests -q
 Tests requiring optional local `support_docs` PDFs are skipped when those
 documents are absent.
 
+## Document administration and model costs
+
+**Document admin** lists saved originals, requirement inventories and indexed
+documents, including pending and failed processing. Filter by state or search by
+name, identifier or jurisdiction; inspect errors, download the verified original,
+or retry failed extraction/indexing without uploading the file again. Comparison
+row progress is shown separately: indexed documents and processed comparisons
+are not expert-approved. Failed extraction now retains the original for diagnosis
+and retry. Historical documents without recorded timestamps/counts show unknown
+values rather than fabricated dates.
+
+Select a document and enable **Show processed information** to inspect its exact
+extracted requirements with page/hash provenance, stored indexed passages and
+saved comparison results (including analysis, translations, pending rows and
+errors). Download the processed information as JSON. This view reads saved state
+only; it does not regenerate outputs or make model calls. Associated comparison
+tables show their full multi-document scope, not only clauses from that document.
+
+In Azure, **Document admin > Blob storage (all containers)** browses every
+container and virtual folder in `POC_BLOB_ACCOUNT_URL`, independently of document
+manifests. This includes unimported files, saved reports, conversations and other
+application state. Click a folder to open it in one step; breadcrumbs and **Up
+one folder** return to its ancestors. **Jump to a folder** accepts a full Blob
+folder URL, a `container/folder/` path, or a path relative to the container root.
+The last folder in each container is remembered for the session, including when
+switching away from the picker. Listings have 100 entries per page, and displayed
+file names omit parent paths. The same navigation is used in Comparison sources.
+Inspect file metadata and UTF-8/JSON previews (up to 256 KiB), download
+originals (up to 64 MiB in Streamlit; streaming API downloads have no such limit),
+and open associated processed document details when the original URI matches.
+Browsing never imports, deletes or modifies files.
+
+To compare PDFs already in Azure storage, open **Comparison sources > Use an
+existing Blob document**. Select a known uploaded PDF, or browse any container and
+folder (including unimported files). Assign the comparison role, source language,
+jurisdiction and revision, then select **Use selected Blob PDF: extract and index**.
+This explicitly creates the comparison requirement inventory and indexes it;
+it does not re-upload or modify the original Blob. Existing uploaded document IDs
+are reused when the source URI/hash match. Imports retain the original URI and
+SHA-256 for verified downloads and processing retries. Text-based PDFs up to
+200 MiB are supported; originals must remain available and unchanged. Browsing
+is free of model calls; explicit indexing records embedding tokens/costs.
+
+This requires **Storage Blob Data Reader** for API/UI identities at storage-account
+scope to enumerate all containers, including future ones. Existing write roles
+remain scoped to the three application containers. Keep authenticated access
+enabled: the browser exposes all readable application state to authorized users,
+and would expose it publicly in explicit no-auth demo mode.
+
+**Model usage & costs** shows provider-reported input/output tokens and estimated
+USD costs for embedding, comparison, translation and evidence-chat calls. Filter
+by document, deployment, operation or UTC date range and download the usage ledger
+as JSON. Records are persisted per call in local `.data/regulatory` state or the
+shared Blob state container, so concurrent rows and API/UI processes do not
+overwrite one another. Prompts and source text are not stored in the ledger.
+Offline extraction and viewing saved results make no model calls.
+
+Configure your contracted USD input/output prices **per million tokens**, keyed
+by the exact deployment name, in the pricing expander on that screen. Saved prices
+apply to future calls across both applications. Alternatively, initialize prices
+with an environment variable in both API and UI processes:
+
+```powershell
+$env:POC_MODEL_PRICING_USD_PER_MILLION = '{"your-model-deployment":{"input":1.0,"output":2.0},"your-embedding-deployment":{"input":0.1,"output":0}}'
+```
+
+Those numbers illustrate the configuration format, **not actual model prices**.
+No retail rate is assumed. Saved screen configuration overrides the environment;
+rates are snapshotted per call and do not retroactively reprice historical usage.
+Missing pricing/usage and failed or interrupted requests are explicitly unknown,
+not free. Tracking starts with this release; it cannot reconstruct prior usage.
+Multi-document calls are shared and counted once in overall totals; document
+filters show the full associated call, not an allocated share. Do not sum those
+filtered totals. Standard input prices are used without cache/batch discounts.
+Storage, Search/IQ service-side model calls, infrastructure, provider-internal
+retries and requests without returned usage are not fully metered: this is an
+application estimate, not an Azure billing reconciliation.
+
+The authenticated API exposes `GET /admin/documents`,
+`GET /admin/documents/{document_id}/processed`,
+`POST /admin/documents/{document_id}/retry`, and `GET /admin/model-usage`
+(optional `document_id`, `model`, `operation`, `start_date`, `end_date` filters).
+These screens and routes use the existing application access restriction, not a
+new admin role; in explicit no-auth demo mode they are shared with all visitors.
+Blob browsing API: `GET /admin/storage/containers`,
+`GET /admin/storage/{container}/entries` (`prefix`, `continuation_token`),
+`GET /admin/storage/{container}/preview?name=...`, and
+`GET /admin/storage/{container}/content?name=...` (streamed attachment).
+Import a stored comparison PDF with `POST /regulatory/documents/from-blob`
+(`container`, `name`, `role`, `language`, optional `standard`, `revision`,
+`jurisdiction`, `extraction_profile`). It uses the same validation, durable
+failure records and retry flow as uploaded comparison sources.
+
 ## Run locally
 
 ### Offline
